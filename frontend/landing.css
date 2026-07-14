@@ -1,0 +1,49 @@
+/* Title / landing page — reuses the app's color variables from styles.css so it
+   always stays visually in sync with the dashboard theme. */
+.landing-body{display:flex;min-height:100vh;margin:0}
+.landing{
+  margin:auto;max-width:640px;padding:64px 40px;text-align:center;
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+}
+.landing-logo{display:inline-flex;align-items:center;justify-content:center}
+.landing-logo-img{
+  height:44px;display:block;border-radius:10px;
+  filter:invert(1) brightness(1.6) drop-shadow(0 0 26px rgba(255,212,0,.35)) drop-shadow(0 0 46px rgba(94,200,255,.16));
+}
+.landing-eyebrow{
+  color:var(--yellow);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.22em;
+  margin-top:26px;
+}
+.landing-title{
+  font-family:"Space Grotesk","Inter",sans-serif;font-weight:800;letter-spacing:-.02em;
+  font-size:58px;line-height:1.05;margin:8px 0 6px;
+  background:linear-gradient(100deg,#fff 25%,var(--blue) 65%,var(--violet) 95%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.landing-tag{
+  color:#c4c5cb;font-size:15.5px;line-height:1.7;max-width:520px;margin:6px 0 8px;
+}
+.landing-cta{
+  display:inline-flex;align-items:center;gap:10px;margin-top:18px;padding:16px 34px;border-radius:999px;
+  background:linear-gradient(135deg,var(--yellow),var(--yellow-d));color:var(--yellow-ink);
+  font-weight:800;font-size:13.5px;text-transform:uppercase;letter-spacing:.06em;text-decoration:none;
+  box-shadow:0 10px 34px rgba(255,212,0,.28);transition:transform .15s,box-shadow .15s;
+}
+.landing-cta:hover{transform:translateY(-2px) scale(1.02);box-shadow:0 14px 42px rgba(255,212,0,.4)}
+.landing-cta .arrow{transition:transform .15s}
+.landing-cta:hover .arrow{transform:translateX(3px)}
+.landing-chips{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:30px;max-width:480px}
+.landing-chips span{
+  font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  padding:6px 13px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);
+}
+.landing-chips span:nth-child(5n+1){color:var(--yellow);border-color:rgba(255,212,0,.25);background:rgba(255,212,0,.08)}
+.landing-chips span:nth-child(5n+2){color:var(--blue);border-color:rgba(94,200,255,.25);background:rgba(94,200,255,.08)}
+.landing-chips span:nth-child(5n+3){color:var(--violet);border-color:rgba(192,139,255,.25);background:rgba(192,139,255,.08)}
+.landing-chips span:nth-child(5n+4){color:var(--green);border-color:rgba(61,220,151,.25);background:rgba(61,220,151,.08)}
+.landing-chips span:nth-child(5n+5){color:var(--amber);border-color:rgba(255,184,77,.25);background:rgba(255,184,77,.08)}
+.landing-foot{color:var(--muted2);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin-top:44px}
+@media(max-width:560px){
+  .landing{padding:48px 24px}
+  .landing-title{font-size:40px}
+}

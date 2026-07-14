@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RMA Process Guide — Axon CS Resource Library</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles.css">
+<link rel="stylesheet" href="_doc.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo">AX<b>O</b>N</div>
+    <div>
+      <h1>Customer Success Resource Library</h1>
+      <div class="sub">RMAs · Hardware Return &amp; Replacement</div>
+    </div>
+  </div>
+</header>
+<div class="docwrap">
+  <a class="doc-back" href="/app.html">← Back to Command Center</a>
+  <div class="doc-hero">
+    <div class="eyebrow">RMAs</div>
+    <h1>RMA Process Guide</h1>
+    <p>What qualifies for a Return Merchandise Authorization, what to collect from the customer before filing, and how to keep a device outage from turning into a renewal risk.</p>
+  </div>
+
+  <div class="card">
+    <h2>When to file an RMA</h2>
+    <table>
+      <thead><tr><th>Category</th><th>Examples</th><th>Typical path</th></tr></thead>
+      <tbody>
+        <tr><td><b>DOA</b> (dead on arrival)</td><td>Device never powers on out of the box</td><td>Expedited replacement, no troubleshooting required</td></tr>
+        <tr><td><b>Hardware failure</b></td><td>Camera won't record, dock won't charge, TASER self-test fails</td><td>Standard RMA after basic troubleshooting</td></tr>
+        <tr><td><b>Physical damage</b></td><td>Cracked housing, water damage, drop damage</td><td>Warranty-dependent — check coverage terms first</td></tr>
+        <tr><td><b>Battery issues</b></td><td>Swelling, won't hold charge, won't seat in dock</td><td>Priority RMA — battery swelling is a safety issue, escalate same day</td></tr>
+        <tr><td><b>Cosmetic / non-functional wear</b></td><td>Scuffed housing with no functional impact</td><td>Not eligible for RMA under normal warranty terms</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Before you file — information to collect</h2>
+    <ul>
+      <li>Agency account number and site/precinct</li>
+      <li>Device serial number(s) — usually on the underside of body cams, base of TASER devices, or dock label</li>
+      <li>Purchase order number and approximate purchase/deployment date</li>
+      <li>Clear description of the symptom (not just "it's broken") — when it started, whether it's one unit or many</li>
+      <li>Troubleshooting already attempted: reboot, re-seat in dock, firmware version, tried on a different dock/cable</li>
+      <li>Whether the unit is currently in active field use or already pulled from rotation</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Filing steps</h2>
+    <div class="step"><div class="num">1</div><div class="body"><h3>Confirm eligibility</h3><p>Check warranty status and the category table above. If it's ambiguous, file anyway and let hardware support make the call — don't gate the customer on your own judgment call.</p></div></div>
+    <div class="step"><div class="num">2</div><div class="body"><h3>Submit the RMA</h3><p>Submit through the Axon RMA portal (or on the customer's behalf if they're not self-serve) with the information collected above. You'll receive an RMA number — this is the tracking reference for everything downstream.</p></div></div>
+    <div class="step"><div class="num">3</div><div class="body"><h3>Ship the defective unit</h3><p>Package with the RMA number clearly labeled on the outside of the box. Replacement units are typically not shipped until the defective unit is received, unless a loaner/advance-replacement is approved (see SLAs below).</p></div></div>
+    <div class="step"><div class="num">4</div><div class="body"><h3>Log it in the account record</h3><p>Add a note against the account (Escalation tab, or a Case Watch entry if it's blocking cases) so anyone opening the account later sees an RMA is in flight — don't let it live only in your inbox.</p></div></div>
+    <div class="step"><div class="num">5</div><div class="body"><h3>Confirm replacement receipt</h3><p>Follow up with the customer once the replacement ships and again once it arrives. Close the loop — a silently-resolved RMA still shows up as an open worry in the customer's mind.</p></div></div>
+  </div>
+
+  <div class="card">
+    <h2>SLAs &amp; escalation</h2>
+    <ul>
+      <li><b>Standard replacement:</b> processed within the agency's support-tier SLA once the RMA is approved</li>
+      <li><b>Expedited / loaner:</b> available when the outage is mission-critical (e.g. an agency down a meaningful percentage of active cameras) — request explicitly, it is not automatic</li>
+      <li><b>Escalate to the CSM directly, not just support,</b> when: the same device fails repeatedly, a batch of units fails around the same time (possible systemic issue), or an RMA has been open longer than the stated SLA with no update</li>
+      <li><b>Escalate to hardware engineering</b> (via your CSM) when a failure pattern looks systemic rather than one-off — this is worth flagging even if each individual RMA is being handled fine</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Common issues quick reference</h2>
+    <table>
+      <thead><tr><th>Device</th><th>Symptom</th><th>Likely cause</th><th>First step</th></tr></thead>
+      <tbody>
+        <tr><td>Body camera</td><td>Won't upload at dock</td><td>Dock firmware / network, not the camera</td><td>Re-seat, check dock network status before RMA'ing the camera</td></tr>
+        <tr><td>Body camera</td><td>Video has audio but no picture</td><td>Lens/sensor fault</td><td>RMA — hardware fault, no fix in the field</td></tr>
+        <tr><td>TASER device</td><td>Fails self-test</td><td>Battery or internal fault</td><td>Swap battery first, RMA if self-test still fails</td></tr>
+        <tr><td>Dock / charging bay</td><td>Won't charge one specific slot</td><td>Slot-level hardware fault</td><td>Test device in a different slot to isolate before RMA'ing the whole dock</td></tr>
+        <tr><td>Battery</td><td>Visible swelling</td><td>Battery degradation — safety issue</td><td>Pull from service immediately, priority RMA, do not attempt to charge further</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footlinks">Axon Customer Success Resource Library · this page is served locally by your Command Center backend and can be edited directly in <code>frontend/resources/rma-guide.html</code>.</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+/* Shared styling for standalone Resource Library documents. Loaded after the main
+   app stylesheet so it can reuse all the same CSS variables, pills, cards, etc. */
+.docwrap{max-width:880px;margin:0 auto;padding:36px 26px 90px}
+.doc-back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:11.5px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:26px;transition:color .15s}
+.doc-back:hover{color:var(--yellow)}
+.doc-hero{margin-bottom:26px}
+.doc-hero .eyebrow{color:var(--yellow);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
+.doc-hero h1{font-size:30px;margin:0 0 10px;letter-spacing:-.01em;font-weight:800}
+.doc-hero p{color:var(--muted);font-size:14.5px;max-width:680px;line-height:1.6}
+.docwrap .card h2{margin:0 0 14px;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;
+  padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
+.docwrap .card h3{margin:16px 0 6px;font-size:13.5px;font-weight:700;color:var(--ink);text-transform:none;letter-spacing:0}
+.docwrap ol,.docwrap ul{padding-left:22px;line-height:1.75;font-size:13.5px}
+.docwrap li{margin-bottom:7px}
+.docwrap p{line-height:1.7;font-size:13.5px;color:var(--ink)}
+.docwrap .lead{color:var(--muted);font-size:14px}
+.step{display:flex;gap:14px;margin-bottom:16px;align-items:flex-start}
+.step .num{flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:var(--yellow)}
+.step .body h3{margin:2px 0 4px}
+.step .body p{margin:0;color:var(--muted)}
+.docwrap table{margin-top:6px}
+.footlinks{margin-top:36px;padding-top:20px;border-top:1px solid var(--line-soft);color:var(--muted2);font-size:11.5px}

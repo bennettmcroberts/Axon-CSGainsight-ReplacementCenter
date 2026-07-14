@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Axon CS Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <a href="index.html" class="logo" style="color:inherit;text-decoration:none" title="Back to home">AX<b>O</b>N</a>
+    <div>
+      <h1>Customer Success Command Center</h1>
+      <div class="sub">Renewal intelligence &amp; account health &middot; Protect Life</div>
+    </div>
+  </div>
+  <div class="topright">
+    <span class="modebadge" id="modeBadge">connecting&hellip;</span>
+    <span id="asof"></span>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="side">
+    <nav class="tabs" id="tabs">
+      <button data-tab="home" class="active"><svg class="ic" viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-5H10v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Home</span></button>
+      <div class="sec sec-blue">Portfolio</div>
+      <button data-tab="overview"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19V5m6 14V9m6 10V3m6 16v-6"/></svg><span>Command Center</span></button>
+      <button data-tab="hierarchy"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3v5M6 21v-4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4M12 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm12 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></svg><span>Org Drill-down</span></button>
+      <button data-tab="renewals"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.3L3 8M3 3v5h5"/></svg><span>Renewals</span></button>
+      <button data-tab="scorecard"><svg class="ic" viewBox="0 0 24 24"><path d="M9 17V9m6 8V5M4 20h16M4 4h4v4H4zm12 0h4v4h-4z"/></svg><span>CSM Scorecard</span></button>
+      <div class="sec sec-amber">Act</div>
+      <button data-tab="ctas"><span>CTAs</span><span class="b" id="ctaBadge">0</span></button>
+      <button data-tab="escalations"><span>Escalations</span><span class="b" id="escBadge">0</span></button>
+      <button data-tab="casewatch"><span>Case Watch</span><span class="b" id="caseBadge">0</span></button>
+      <button data-tab="engagement"><span>Engagement</span><span class="b" id="cadenceBadge">0</span></button>
+      <button data-tab="plans"><span>Success Plans</span></button>
+      <button data-tab="journeys"><span>Journeys</span></button>
+      <button data-tab="worklist"><span>My Worklist</span></button>
+      <div class="sec sec-violet">Configure</div>
+      <button data-tab="model"><span>Health Model</span></button>
+      <button data-tab="resources"><span>Resource Library</span></button>
+    </nav>
+    <div class="sfoot">Health, sentiment &amp; CSAT computed client-side from live account signals.</div>
+  </aside>
+
+  <div class="main">
+    <div class="inner">
+    <div class="scopebar" id="scopebar">
+      <div class="crumb" id="crumb"></div>
+      <div class="viewas" id="viewas"></div>
+      <div class="role" id="scoperole"></div>
+    </div>
+
+    <div id="app">
+      <div class="loading">
+        <div class="spinner"></div>
+        <div>Connecting &mdash; renewals, org hierarchy, purchase history &amp; support signals&hellip;</div>
+      </div>
+    </div>
+
+    <div class="foot" id="foot"></div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
+<div id="toastHost"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
