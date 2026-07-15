@@ -1,24 +1,97 @@
-/* Shared styling for standalone Resource Library documents. Loaded after the main
-   app stylesheet so it can reuse all the same CSS variables, pills, cards, etc. */
+/* Resource Library documents — Axon light theme (white / black / yellow chrome,
+   green / amber / red for status). Self-contained; does not need styles.css. */
+:root{
+  color-scheme: light;
+  --page:#f4f4f4; --panel:#ffffff; --panel2:#f7f7f7; --ink:#000000;
+  --muted:#5c5c5c; --muted2:#8a8a8a; --line:#e0e0e0; --line-soft:#ececec;
+  --yellow:#ffe600; --yellow-ink:#000000;
+  --green:#1a9e5c; --greenbg:rgba(26,158,92,.12);
+  --amber:#d4890a; --amberbg:rgba(212,137,10,.12);
+  --red:#d64545; --redbg:rgba(214,69,69,.1);
+  --blue:#2a7de1; --bluebg:rgba(42,125,225,.1);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.06);
+  --header-bg:#ffffff; --thead-bg:#fafafa;
+}
+html[data-theme="dark"]{
+  color-scheme: dark;
+  --page:#0a0a0a; --panel:#121212; --panel2:#1a1a1a; --ink:#f5f5f5;
+  --muted:#a3a3a3; --muted2:#6b6b6b; --line:#2a2a2a; --line-soft:#1f1f1f;
+  --yellow:#ffe600; --yellow-ink:#000000;
+  --green:#3ddc97; --greenbg:rgba(61,220,151,.14);
+  --amber:#ffb84d; --amberbg:rgba(255,184,77,.14);
+  --red:#ff6b6b; --redbg:rgba(255,107,107,.14);
+  --blue:#5ec8ff; --bluebg:rgba(94,200,255,.14);
+  --shadow-sm:0 1px 0 rgba(255,255,255,.04);
+  --header-bg:#000000; --thead-bg:#0d0d0d;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);
+  font:14px/1.55 "IBM Plex Sans","Helvetica Neue",Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;min-height:100vh}
+a{color:var(--ink);text-decoration:none}
+::selection{background:rgba(255,230,0,.45);color:#000}
+
+header.top{background:var(--header-bg);color:var(--ink);display:flex;align-items:center;justify-content:space-between;gap:16px;
+  flex-wrap:wrap;padding:14px 28px;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:40;box-shadow:var(--shadow-sm)}
+header.top::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--yellow)}
+.brand{display:flex;align-items:center;gap:18px}
+.logo{display:inline-flex;align-items:center;gap:10px;color:var(--ink);padding-right:18px;border-right:1px solid var(--line);line-height:1}
+.logo-mark{width:24px;height:24px;flex:0 0 auto;color:var(--yellow)}
+.logo-word{font-family:"Barlow Condensed","IBM Plex Sans",sans-serif;font-weight:700;font-size:26px;letter-spacing:.18em}
+.brand h1{font-family:"Barlow Condensed","IBM Plex Sans",sans-serif;font-size:15px;margin:0;font-weight:600;text-transform:uppercase;letter-spacing:.14em}
+.brand .sub{color:var(--muted2);font-size:11px;margin-top:2px;letter-spacing:.04em;text-transform:uppercase}
+.theme-toggle{width:30px;height:30px;padding:0;border:1px solid var(--line);background:var(--panel2);color:var(--ink);cursor:pointer;
+  border-radius:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;transition:border-color .12s,background .12s,color .12s}
+.theme-toggle svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.theme-toggle:hover{border-color:var(--yellow);background:var(--yellow);color:#000}
+
 .docwrap{max-width:880px;margin:0 auto;padding:36px 26px 90px}
 .doc-back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:11.5px;font-weight:700;
-  text-transform:uppercase;letter-spacing:.06em;margin-bottom:26px;transition:color .15s}
-.doc-back:hover{color:var(--yellow)}
-.doc-hero{margin-bottom:26px}
-.doc-hero .eyebrow{color:var(--yellow);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
-.doc-hero h1{font-size:30px;margin:0 0 10px;letter-spacing:-.01em;font-weight:800}
-.doc-hero p{color:var(--muted);font-size:14.5px;max-width:680px;line-height:1.6}
-.docwrap .card h2{margin:0 0 14px;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;
-  padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
-.docwrap .card h3{margin:16px 0 6px;font-size:13.5px;font-weight:700;color:var(--ink);text-transform:none;letter-spacing:0}
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:26px;transition:color .12s,background .12s;padding:4px 0}
+.doc-back:hover{color:#000;background:var(--yellow);padding:4px 8px}
+
+.doc-hero{margin-bottom:26px;background:var(--panel);border:1px solid var(--line);padding:28px 28px 28px 32px;position:relative;box-shadow:var(--shadow-sm)}
+.doc-hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--yellow)}
+.doc-hero .eyebrow{color:#000;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.14em;margin-bottom:12px;background:var(--yellow);display:inline-block;padding:3px 8px}
+.doc-hero h1{font-family:"Barlow Condensed","IBM Plex Sans",sans-serif;font-size:32px;margin:0 0 10px;letter-spacing:.03em;font-weight:700;text-transform:uppercase;line-height:1.05}
+.doc-hero p{color:var(--muted);font-size:14.5px;max-width:680px;line-height:1.65;margin:0}
+
+.card{background:var(--panel);border:1px solid var(--line);padding:20px;margin-bottom:14px;box-shadow:var(--shadow-sm)}
+.docwrap .card h2{margin:0 0 14px;font-family:"Barlow Condensed","IBM Plex Sans",sans-serif;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
+  padding-bottom:12px;border-bottom:1px solid var(--line)}
+.docwrap .card h3{margin:16px 0 6px;font-size:14px;font-weight:700;color:var(--ink);text-transform:none;letter-spacing:0}
 .docwrap ol,.docwrap ul{padding-left:22px;line-height:1.75;font-size:13.5px}
 .docwrap li{margin-bottom:7px}
 .docwrap p{line-height:1.7;font-size:13.5px;color:var(--ink)}
 .docwrap .lead{color:var(--muted);font-size:14px}
+
 .step{display:flex;gap:14px;margin-bottom:16px;align-items:flex-start}
-.step .num{flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
-  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:var(--yellow)}
+.step .num{flex:0 0 auto;width:28px;height:28px;border-radius:0;background:var(--yellow);border:1px solid #000;
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#000}
 .step .body h3{margin:2px 0 4px}
 .step .body p{margin:0;color:var(--muted)}
-.docwrap table{margin-top:6px}
-.footlinks{margin-top:36px;padding-top:20px;border-top:1px solid var(--line-soft);color:var(--muted2);font-size:11.5px}
+
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+th,td{text-align:left;padding:10px 11px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+thead th{border-bottom:1px solid var(--line);background:var(--thead-bg);color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+tbody tr:hover{background:rgba(255,230,0,.1)}
+
+.pill{display:inline-block;padding:2px 8px;font-size:10px;font-weight:800;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em;border:1px solid transparent}
+.p-green{background:var(--greenbg);color:var(--green);border-color:rgba(26,158,92,.3)}
+.p-amber{background:var(--amberbg);color:var(--amber);border-color:rgba(212,137,10,.3)}
+.p-red{background:var(--redbg);color:var(--red);border-color:rgba(214,69,69,.3)}
+.p-blue{background:var(--bluebg);color:var(--blue);border-color:rgba(42,125,225,.3)}
+
+.callout{border-left:3px solid var(--amber);background:var(--amberbg);padding:12px 14px;margin:12px 0}
+.callout.ok{border-left-color:var(--green);background:var(--greenbg)}
+.callout.warn{border-left-color:var(--amber);background:var(--amberbg)}
+.callout.danger{border-left-color:var(--red);background:var(--redbg)}
+
+.footlinks{margin-top:36px;padding-top:20px;border-top:1px solid var(--line);color:var(--muted2);font-size:11.5px;line-height:1.6}
+.footlinks code{background:var(--panel2);border:1px solid var(--line);padding:1px 5px;font-size:11px;color:var(--ink)}
+
+@media(max-width:640px){
+  .docwrap{padding:24px 16px 70px}
+  .doc-hero h1{font-size:26px}
+  header.top{padding:12px 16px}
+}

@@ -4,21 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RMA Process Guide — Axon CS Resource Library</title>
+<script>!function(){var t=localStorage.getItem('cscc-color-theme');document.documentElement.setAttribute('data-theme',t==='dark'||t==='light'?t:'light')}()</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../styles.css">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="_doc.css">
 </head>
 <body>
 <header class="top">
   <div class="brand">
-    <div class="logo">AX<b>O</b>N</div>
+    <div class="logo">
+      <svg class="logo-mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 2.5 38.2 37.5H1.8L20 2.5Z"/></svg>
+      <span class="logo-word">AXON</span>
+    </div>
     <div>
       <h1>Customer Success Resource Library</h1>
       <div class="sub">RMAs · Hardware Return &amp; Replacement</div>
     </div>
   </div>
+  <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle color theme"></button>
 </header>
 <div class="docwrap">
   <a class="doc-back" href="/app.html">← Back to Command Center</a>
@@ -36,10 +40,11 @@
         <tr><td><b>DOA</b> (dead on arrival)</td><td>Device never powers on out of the box</td><td>Expedited replacement, no troubleshooting required</td></tr>
         <tr><td><b>Hardware failure</b></td><td>Camera won't record, dock won't charge, TASER self-test fails</td><td>Standard RMA after basic troubleshooting</td></tr>
         <tr><td><b>Physical damage</b></td><td>Cracked housing, water damage, drop damage</td><td>Warranty-dependent — check coverage terms first</td></tr>
-        <tr><td><b>Battery issues</b></td><td>Swelling, won't hold charge, won't seat in dock</td><td>Priority RMA — battery swelling is a safety issue, escalate same day</td></tr>
-        <tr><td><b>Cosmetic / non-functional wear</b></td><td>Scuffed housing with no functional impact</td><td>Not eligible for RMA under normal warranty terms</td></tr>
+        <tr><td><b>Battery issues</b> <span class="pill p-red">Safety</span></td><td>Swelling, won't hold charge, won't seat in dock</td><td>Priority RMA — battery swelling is a safety issue, escalate same day</td></tr>
+        <tr><td><b>Cosmetic / non-functional wear</b> <span class="pill p-amber">Not eligible</span></td><td>Scuffed housing with no functional impact</td><td>Not eligible for RMA under normal warranty terms</td></tr>
       </tbody>
     </table>
+    <div class="callout danger"><b>Battery swelling:</b> treat as a same-day safety escalation — pull the unit from service, do not continue charging, and file a priority RMA immediately.</div>
   </div>
 
   <div class="card">
@@ -66,8 +71,8 @@
   <div class="card">
     <h2>SLAs &amp; escalation</h2>
     <ul>
-      <li><b>Standard replacement:</b> processed within the agency's support-tier SLA once the RMA is approved</li>
-      <li><b>Expedited / loaner:</b> available when the outage is mission-critical (e.g. an agency down a meaningful percentage of active cameras) — request explicitly, it is not automatic</li>
+      <li><span class="pill p-green">Standard</span> <b>replacement:</b> processed within the agency's support-tier SLA once the RMA is approved</li>
+      <li><span class="pill p-amber">Expedited</span> <b>/ loaner:</b> available when the outage is mission-critical (e.g. an agency down a meaningful percentage of active cameras) — request explicitly, it is not automatic</li>
       <li><b>Escalate to the CSM directly, not just support,</b> when: the same device fails repeatedly, a batch of units fails around the same time (possible systemic issue), or an RMA has been open longer than the stated SLA with no update</li>
       <li><b>Escalate to hardware engineering</b> (via your CSM) when a failure pattern looks systemic rather than one-off — this is worth flagging even if each individual RMA is being handled fine</li>
     </ul>
@@ -89,5 +94,6 @@
 
   <div class="footlinks">Axon Customer Success Resource Library · this page is served locally by your Command Center backend and can be edited directly in <code>frontend/resources/rma-guide.html</code>.</div>
 </div>
+<script src="/assets/theme.js"></script>
 </body>
 </html>

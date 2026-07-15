@@ -20,6 +20,7 @@ from .salesforce_client import SalesforceUnavailable, run_salesforce_query
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = (BACKEND_DIR.parent / "frontend").resolve()
+FRONTEND_AXON_DIR = (BACKEND_DIR.parent / "frontend-axon").resolve()
 
 app = FastAPI(title="Axon CS Command Center API")
 
@@ -71,6 +72,21 @@ if FRONTEND_DIR.exists():
     @app.get("/")
     def index():
         return FileResponse(FRONTEND_DIR / "index.html")
+
+    # Parallel "Axon Yellow" UI experiment — same /api + shared /assets/app.js,
+    # different HTML/CSS under frontend-axon/. Open at /axon/
+    if FRONTEND_AXON_DIR.exists():
+        @app.get("/axon")
+        @app.get("/axon/")
+        def axon_index():
+            return FileResponse(FRONTEND_AXON_DIR / "index.html")
+
+        @app.get("/axon/{filename}")
+        def axon_file(filename: str):
+            candidate = FRONTEND_AXON_DIR / filename
+            if candidate.is_file():
+                return FileResponse(candidate)
+            raise HTTPException(status_code=404, detail="Not found")
 
     @app.get("/{filename}")
     def frontend_file(filename: str):

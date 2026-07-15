@@ -29,6 +29,12 @@ PRIORITIES = ["Low", "Medium", "High", "Urgent"]
 SEGMENTS = ["Strategic", "Enterprise", "Mid-Market", "SMB"]
 GROWTH_TYPES = ["Renewal", "Expansion", "Transactional"]
 
+# TAP (Technology Assurance Plan) hardware families - per Leana's stakeholder
+# finding: TAP is a hardware-warranty refresh motion, due at the 2.5-year
+# midpoint of a 5-year contract. SAAS/Training/COMMANDER are software, not
+# hardware, so they don't carry a TAP refresh cycle.
+TAP_HARDWARE_FAMILIES = ["Cart", "FLEX 2", "X26", "BODYCAM3", "FLEET", "AIR", "INTERVIEW"]
+
 STAGES_EARLY = ["Discovering", "Pre Sales", "Interest", "Qualifying", "Evaluation/Scoping", "Prospecting"]
 STAGES_LATE = ["Value Proposition", "Proposal/Price Quote", "Negotiation/Review", "Contract Sent", "Verbal Commit"]
 
@@ -100,6 +106,7 @@ class MockAccount:
     aging_cases: int = 0
     nps_score: int | None = None
     nps_survey_date: str | None = None
+    hw_first_purchase: str | None = None  # earliest closed-won hardware (TAP-eligible) line item date
     won_deals: list[dict] = field(default_factory=list)
     line_items: list[dict] = field(default_factory=list)
     tasks: list[dict] = field(default_factory=list)
@@ -300,6 +307,9 @@ class MockDataset:
             n_lines = rng.randint(1, 3)
             remaining = deal_amount
             chosen_families = rng.sample(families, k=min(n_lines, len(families)))
+            if any(fam in TAP_HARDWARE_FAMILIES for fam in chosen_families):
+                if acct.hw_first_purchase is None or deal_close.isoformat() < acct.hw_first_purchase:
+                    acct.hw_first_purchase = deal_close.isoformat()
             for idx, fam in enumerate(chosen_families):
                 portion = remaining if idx == len(chosen_families) - 1 else remaining * rng.uniform(0.3, 0.6)
                 portion = round(max(portion, 500), 2)
@@ -370,6 +380,8 @@ class MockDataset:
 
         if "from account" in qlow and "nps" in qlow:
             return self._q_nps(q)
+        if "from opportunitylineitem" in qlow and "family__c" in qlow:
+            return self._q_tap(q)
         if "from user" in qlow and " id in" in qlow:
             return self._q_users(q)
         if "from opportunity" in qlow and "type='renewal'" in qlow.replace(" ", ""):
@@ -488,6 +500,15 @@ class MockDataset:
                 e["c"] += 1
             for gt, v in by_type.items():
                 out.append({"AccountId": acc_id, "GrowthType": gt, "amt": round(v["amt"], 2), "c": v["c"]})
+        return out
+
+    def _q_tap(self, q: str) -> list[dict]:
+        ids = set(self._extract_quoted(q))
+        out = []
+        for acc_id in ids:
+            acc = self.accounts.get(acc_id)
+            if acc and acc.hw_first_purchase:
+                out.append({"AccountId": acc_id, "HwFirstPurchase__c": acc.hw_first_purchase})
         return out
 
     def _q_nps(self, q: str) -> list[dict]:

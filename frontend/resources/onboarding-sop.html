@@ -4,21 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Onboarding SOP Template — Axon CS Resource Library</title>
+<script>!function(){var t=localStorage.getItem('cscc-color-theme');document.documentElement.setAttribute('data-theme',t==='dark'||t==='light'?t:'light')}()</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../styles.css">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="_doc.css">
 </head>
 <body>
 <header class="top">
   <div class="brand">
-    <div class="logo">AX<b>O</b>N</div>
+    <div class="logo">
+      <svg class="logo-mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 2.5 38.2 37.5H1.8L20 2.5Z"/></svg>
+      <span class="logo-word">AXON</span>
+    </div>
     <div>
       <h1>Customer Success Resource Library</h1>
       <div class="sub">Onboarding · Standard Operating Procedure</div>
     </div>
   </div>
+  <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle color theme"></button>
 </header>
 <div class="docwrap">
   <a class="doc-back" href="/app.html">← Back to Command Center</a>
@@ -109,5 +113,6 @@
 
   <div class="footlinks">Axon Customer Success Resource Library · this page is served locally by your Command Center backend and can be edited directly in <code>frontend/resources/onboarding-sop.html</code>.</div>
 </div>
+<script src="/assets/theme.js"></script>
 </body>
 </html>

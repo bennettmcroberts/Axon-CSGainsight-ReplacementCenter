@@ -210,16 +210,53 @@ try to resolve unilaterally:
   yet; inventing one would violate the #1 cross-source finding from this round
   (data shown must be accurate, not just present — Leana's live demo showed
   wrong data, Mark independently called Gainsight's data unreliable).
-- **TAP refresh tracking, escalation reason/product tagging, structured Success
-  Plan discovery fields, playbook-per-task links, configurable auto-CTA
-  thresholds** — real, corroborated asks, intentionally deferred rather than
-  built speculatively; see the evaluation this app's author walked through with
-  the requester for the full prioritized list.
+- **Playbook-per-task links, configurable auto-CTA thresholds** — real,
+  corroborated asks, still intentionally deferred rather than built
+  speculatively; see the evaluation this app's author walked through with the
+  requester for the full prioritized list.
 - **Customer-facing pages, real write-back to Salesforce, actual bulk email
   sending, a full rules engine / per-CSM alerts** — each hits either an
   InfoSec wall (data must stay on Axon servers), needs a scoped integration
   project of its own (Salesforce write API + custom fields + permissions), or
   was explicitly called out as v2 in the source research.
+
+### Update: Beatrice's emphasized follow-ups (standardized templates, TAP tab, escalation detail)
+
+A follow-up ask pulled three items that Beatrice put particular emphasis on
+back off the deferred list above and built them out:
+
+- **Standardized Success Plan discovery template** — Leana & Beatrice's list
+  of structured deal/account fields (purchasing story, stakeholders, incumbent,
+  reason for purchase, goals/outcomes, pain points, "what does winning look
+  like," blockers, politics, irregular contract terms, welcome deck link, SLA
+  tracking info) is now part of every Success Plan, auto-generated or custom —
+  a `discovery` object on the plan record, rendered as a collapsible card on
+  the plan sheet. Kept optional/collapsible per Derek's "don't force pedantic
+  fields on a team that doesn't need them" concern: nothing is required, and
+  the section stays collapsed until at least one field has data.
+- **TAP Refreshes — a dedicated tab, not just a status pill** — Leana's ask
+  was for TAP status on the home dashboard; this build goes further and gives
+  it its own tab (mirroring Renewals), because a status number alone isn't
+  actionable. Tracks every account with Axon hardware (body cameras, TASER,
+  fleet, interview room, cartridges, drones) on file, computes the refresh-due
+  date at the 2.5-year mark of a 5-year hardware contract, and gives each
+  account a standardized refresh checklist (inventory confirmation → quote →
+  shipment → install → RMA → close-out) plus a one-click "Add TAP Refresh CTA."
+  Software-only families (SAAS/Training/COMMANDER) don't carry a TAP cycle and
+  are correctly excluded.
+- **Escalations — reason code, product tag, actionable checklist, staleness** —
+  per Leana's finding that escalations need to be tracked distinctly from
+  routine tickets. Every escalation now carries a reason code (Technical /
+  Support Experience / Feature Request / Other), a product tag, a
+  standardized 6-step actionable checklist, and a computed "days open" with a
+  14-day staleness flag. A new "Leadership rollup" card on the Escalations tab
+  breaks the active queue down by reason and by product for a portfolio view,
+  without requiring anyone to click into every account. One caveat worth
+  flagging: this mock has no real "escalation created" event/date to anchor
+  "days open" to, so the clock starts the first time this app computes that
+  account as escalated (effectively, the first time you load the app after it
+  crosses the risk threshold) rather than a true historical open date — a real
+  Salesforce escalation object with a `CreatedDate` would fix this outright.
 
 ## Custom fields this app assumes for live Salesforce parity
 
@@ -234,6 +271,8 @@ fields/logic exist on the real org (see `README.md` for where each query is buil
 | `Case.IsAging__c` | Case Watch — aging cases | Derive from `Case.CreatedDate` age instead of a stored flag — this app models it as a boolean for simplicity |
 | `Opportunity.GrowthType__c` | Growth mix (Renewal/Expansion/Transactional), CSM Scorecard growth columns | No Salesforce standard equivalent — would need a new picklist field on won Opportunities, or a derivation rule (e.g. compare product families across an account's deal history) |
 | `Account.NPS_Score__c` / `SurveyDate__c` | NPS on Home, Overview, CSM Scorecard, Account 360 | Per Leana: this is real today, sourced from the biannual NPS survey's existing Salesforce report (or Nova Sales Snowflake) — needs the report's underlying object/fields identified and queried instead of this placeholder shape |
+| `OpportunityLineItem.Family__c` (flat field, standing in for a `Product2.Family` join filtered to hardware families) | TAP Refreshes tab — earliest hardware purchase date, used to compute the 2.5yr refresh / 5yr contract-end dates | `Product2.Family IN (...)` already works today per-account (see the Products purchased card); the flat field is only needed for an efficient bulk, multi-account query across the whole book |
+| `Case.ReasonCode__c` / `Case.EscalationProduct__c` equivalents | Escalations tab — reason code + product tagging, leadership rollup | No standard Salesforce equivalent for an *escalation* specifically (as opposed to a case); would need a dedicated Escalation record type or two new picklist fields, per Leana's finding that escalations should be tracked distinctly from routine tickets |
 
 Everything else (renewals, org hierarchy, cases, deals, line items, tasks/events)
 already maps onto stock Salesforce objects/fields, as covered in the main README.

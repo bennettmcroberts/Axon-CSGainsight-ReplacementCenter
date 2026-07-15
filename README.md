@@ -10,11 +10,11 @@ a normal local web app with its own backend, so it works outside Cowork too.
 - `backend/` — a small FastAPI server. It exposes one generic endpoint,
   `POST /api/soql`, that runs a SOQL query and returns `{records: [...]}`. It also
   serves the frontend.
-- `frontend/` — `index.html` is a small title/landing page (logo, tagline, an "Enter
-  Command Center" button); the actual dashboard lives at `app.html` (`styles.css`,
-  `app.js`). All the scoring, success-plan, CTA, journey, escalation and
-  org-drilldown logic from the original artifact is preserved as-is; only the
-  transport (how it fetches data) and the visual theme changed.
+- `frontend/` — classic UI. `index.html` landing page; dashboard at `app.html`
+  (`styles.css`, `app.js`).
+- `frontend-axon/` — **Axon Yellow UI experiment** (light white/black/yellow
+  chrome; green/amber/red for health, risk, and charts). Same product logic via
+  shared `/assets/app.js`; open at **http://127.0.0.1:8420/axon/**.
 - `NOTES.md` — design notes distilled from a conversation with an Axon enterprise CS
   leader, with attributed quotes, and exactly which features in this app trace back to
   that guidance (4-metric CSM Scorecard, engagement cadence, blocked/aging Case Watch,
@@ -31,6 +31,7 @@ a normal local web app with its own backend, so it works outside Cowork too.
 - **"View as [CSM]"** dropdown — filters the entire app (every tab, every chart) down to one CSM's book, session-only.
 - **Org Drill-down scope** — most tabs respect whatever team/manager/CSM you've scoped to via Org Drill-down, shown as a "Scope: ___" breadcrumb.
 - Clickable KPI tiles throughout — clicking one both filters the table below it and, on Home/Overview, jumps straight to the relevant tab.
+- **Light / dark mode** — toggle in the header (and on Resource Library pages). Preference is saved in the browser and shared across classic UI, Axon Yellow UI, and resource docs.
 
 ### Home
 - Headline KPIs, deliberately ordered to lead with **engagement rate, growth (organic/expansion/transactional), customer insights logged, and Book NPS** before ARR/health — per CS-leadership guidance (see `NOTES.md`).
@@ -50,11 +51,18 @@ a normal local web app with its own backend, so it works outside Cowork too.
 - Every open renewal opportunity, sorted by revenue exposure, with stage, close date, lifetime value, open cases, CSAT, renewal readiness score, and ARR at risk.
 - Flags deals that are "behind" — close date inside 90 days but still in an early sales stage.
 
+### TAP Refreshes
+- Dedicated tab for hardware warranty refresh tracking — every account with Axon hardware on file (body cameras, TASER, fleet, interview room, cartridges, drones), with the refresh due date computed at the **2.5-year mark of a 5-year contract** and the contract-end date at the 5-year mark.
+- KPI tiles for overdue refreshes and refreshes due within 90 days, both filterable.
+- Click any account for a **standardized refresh checklist** (confirm inventory → send quote → schedule shipment → coordinate install → confirm RMA → close out), a notes field, a "mark refresh complete" toggle, and a one-click **+ Add TAP Refresh CTA**.
+- Software-only accounts (SAAS/Training/COMMANDER purchases only) are correctly excluded — TAP is a hardware-specific motion.
+
 ### CSM Scorecard
 - The 4 metrics an enterprise CS org is actually run on (per CS-leadership guidance): **customer insights, engagement rate, and growth split into organic/renewal, expansion, and transactional** — not one lump health score.
 - Editable, persisted **targets** per metric with progress bars per CSM.
 - **NPS column** — per-CSM promoter-minus-detractor rollup from real (mocked) biannual survey responses.
-- **Overdue items column** — count of open CTAs + Success Plan milestones past their due date, worst-first; click it to open a **coaching drill-down** showing exactly which items are overdue and how overdue, with one-click jump to the account or plan (added per Leana's "see where a CSM is stuck" ask — see `NOTES.md`).
+- **Overdue items column** — count of open CTAs + Success Plan milestones past their due date, worst-first.
+- **Improve plans** — when a CSM is below target (or has overdue work / weak NPS), the scorecard surfaces a "Reps needing attention" list with a top action, plus an **Improve** button per row. The improve sheet lists concrete next steps (book outreach, log insights, advance renewals, save NPS detractors, clear overdue items) with one-click jumps into the right tab or account.
 
 ### CTAs (Calls to Action)
 - Auto-suggested action items (onboarding, renewal, TAP refresh, CS request, risk, adoption) generated from live account signals, plus manually-added ones.
@@ -63,6 +71,9 @@ a normal local web app with its own backend, so it works outside Cowork too.
 ### Escalations
 - Auto-seeded from live risk signals (health, cases, sentiment), with severity (Critical/High/etc.), status (Open → In Progress → Resolved, reopenable), and a timestamped note log per account.
 - KPI tiles (critical unresolved / open / in progress / resolved) double as filters; **Start** and **Resolve** buttons update status and re-render immediately.
+- **Reason code** (Technical / Support Experience / Feature Request / Other) and **product tag**, editable inline from the table or from Account 360 — escalations are tracked distinctly from routine support tickets, per CS-leadership guidance.
+- **Standardized 6-step actionable checklist** per escalation (acknowledge → identify root cause → loop in product/eng → resolve/workaround → confirm satisfaction → close out), same shape every time regardless of which CSM owns it.
+- **Days-open tracking with a 14-day staleness flag**, and a **Leadership rollup** card breaking the active queue down by reason code and by product — a portfolio view without clicking into every account.
 
 ### Case Watch
 - Splits open cases into the two buckets a CSM actually needs to act on: **blocked** ("it's not happening") vs. **aging** ("it's been open too long") — deliberately not merged into one queue, per CS-leadership guidance.
@@ -75,6 +86,7 @@ a normal local web app with its own backend, so it works outside Cowork too.
 ### Success Plans
 - Auto-generates a milestone-based onboarding/risk plan for any account (new-logo or at-risk), or build a fully custom plan.
 - Editable objectives, milestones (with due dates and done-state), and freeform notes — all persisted per account.
+- **Standardized "Deal & account discovery" template** on every plan — purchasing story, stakeholders, incumbent, reason for purchase, goals/outcomes, pain points, "what does winning look like," blockers, politics, irregular contract terms, welcome deck link, and SLA tracking info. Same structured fields on every plan regardless of CSM; optional and collapsed by default so it doesn't force detail nobody needs.
 
 ### Journeys
 - Four lifecycle outreach journeys (New Logo Welcome, Renewal 90-Day, At-Risk Save Play, Product Adoption Nudge) with membership **auto-derived from live account signals**.
@@ -97,7 +109,8 @@ Opens as an overlay from anywhere in the app. Includes:
 - CSAT card (placeholder, manually settable) and renewal-readiness checklist.
 - Purchase history & lifetime value, products purchased by spend.
 - **Customer Insights** log — freeform notes on what the team is learning about the account, rolled up into the CSM Scorecard.
-- Resources & guides (read-only view into the Resource Library), customer sentiment breakdown, full health-score breakdown, open renewals, recent communications (tasks/events), and the same Escalation status/notes workflow as the Escalations tab.
+- **Activity & next steps** — reps can log a call, email, meeting, or note (subject + what was discussed), set/clear a dated next action, and see a merged timeline of Salesforce history plus what they logged here. Logged touches update engagement cadence; open/overdue next steps also surface on My Worklist.
+- Resources & guides (read-only view into the Resource Library), customer sentiment breakdown, full health-score breakdown, open renewals, and the same Escalation status/reason/product/checklist/notes workflow as the Escalations tab.
 
 By default the backend runs in **mock mode**: it generates a realistic, internally
 consistent synthetic book of ~64 accounts (renewals, org hierarchy, support cases,
@@ -205,9 +218,9 @@ answer came from the mock engine or your real org.
 
 - All of the interactive state a CSM creates in the app — success plans, CTAs,
   escalation notes, journey progress, CSAT overrides, health-model weights, customer
-  insights, the resource library, and CSM Scorecard targets — is saved in the
-  browser's `localStorage`, exactly like the original artifact. It is not sent to
-  Salesforce or the backend.
+  insights, the resource library, CSM Scorecard targets, and logged activity /
+  next steps — is saved in the browser's `localStorage`, exactly like the original
+  artifact. It is not sent to Salesforce or the backend.
 - Mock data is deterministic (seeded), so it looks the same across restarts unless you
   change `MOCK_SEED` or `MOCK_ACCOUNT_COUNT` in `backend/.env`.
 - CSAT is a placeholder everywhere (mock and live) until a real survey/CSAT data
