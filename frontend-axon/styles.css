@@ -247,7 +247,8 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .csat-num{font-family:"Barlow Condensed",sans-serif;font-size:36px;font-weight:700;font-variant-numeric:tabular-nums}
 .csat-face{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
 
-.milestone{display:grid;grid-template-columns:26px 1fr 150px 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+.milestone{display:grid;grid-template-columns:26px 1fr 140px auto auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+@media(max-width:720px){.milestone{grid-template-columns:26px 1fr;grid-auto-flow:row}.milestone input[type=date]{grid-column:2}}
 .milestone:last-child{border-bottom:none}
 .milestone input[type=checkbox]{width:16px;height:16px;accent-color:var(--yellow);cursor:pointer}
 .milestone input[type=text]{width:100%;border:1px solid transparent;background:none;color:var(--ink);font:inherit;padding:5px 7px}
@@ -280,6 +281,12 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .resrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:var(--panel2);border:1px solid var(--line-soft)}
 .resrow a{color:var(--ink);font-weight:600;text-decoration:underline;text-decoration-color:var(--yellow);text-decoration-thickness:2px}
 .resrow a:hover{background:var(--yellow)}
+.bulk-list{display:flex;flex-direction:column;gap:2px;max-height:280px;overflow:auto;border:1px solid var(--line-soft);border-radius:var(--radius-sm);padding:6px}
+.bulk-row{display:grid;grid-template-columns:20px minmax(140px,1fr) 2fr;gap:10px;align-items:center;padding:7px 9px;border-radius:6px;cursor:pointer}
+.bulk-row:hover{background:var(--panel2)}
+.bulk-row input[type=checkbox]{width:16px;height:16px;accent-color:var(--green);cursor:pointer}
+.bulk-name{font-weight:600;color:var(--ink)}
+@media(max-width:720px){.bulk-row{grid-template-columns:20px 1fr}.bulk-row .mini{grid-column:2}}
 
 .email-suggest-list{display:flex;flex-direction:column;gap:8px}
 .email-suggest{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--line);background:var(--panel2)}

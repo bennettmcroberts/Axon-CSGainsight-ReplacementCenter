@@ -953,26 +953,94 @@ function discoveryCard(id,p){
   </div>`;
 }
 function planProgress(p){ if(!p||!p.milestones||!p.milestones.length) return 0; return Math.round(p.milestones.filter(m=>m.done).length/p.milestones.length*100); }
-function generatePlan(id){
+// ---- Talk tracks ----
+// Short, reusable call scripts a CSM can open right from a plan step (or the
+// resource library). Kept in-app so guidance is consistent regardless of tenure.
+const TALK_TRACKS=[
+  {id:'tt_kickoff',title:'Onboarding kickoff call',scenario:'First call with a new logo',
+   script:`Opening: "Thanks for making the time — my job is to make sure your team gets real value from Axon fast, not just get it installed."\n\nConfirm the why: "Remind me what success looks like for you 90 days from now? What made you choose Axon?"\n\nSet the plan: walk through the onboarding milestones and the dates. Confirm the admins and the economic buyer.\n\nCadence: "I'll check in every couple of weeks during rollout, then we'll do a value review at 90 days."\n\nClose: agree on the very next step and who owns it.`},
+  {id:'tt_qbr',title:'Quarterly value review / QBR',scenario:'Recurring executive check-in',
+   script:`Frame: "The goal today is to line up what you've gotten out of Axon against the goals we set, and agree on next quarter."\n\nValue delivered: usage/adoption numbers, outcomes, support wins.\n\nGaps: where adoption is light, what's blocking it, what we'll do about it.\n\nForward look: roadmap items relevant to them, training needs, expansion where it genuinely helps.\n\nClose: confirm owners and dates for each next step.`},
+  {id:'tt_renewal',title:'Renewal value conversation',scenario:'Ahead of a renewal',
+   script:`Frame: "As we get close to renewal I want to make sure the value is obvious and there are no surprises."\n\nRecap: quantify outcomes since last renewal — adoption, cases resolved, time saved.\n\nConfirm process: "Who signs off, and what's the timeline on your side?"\n\nHandle risk early: "Anything that would make you hesitate to renew?" — surface it now.\n\nClose: agree on the paper process and the date.`},
+  {id:'tt_tap',title:'TAP hardware refresh conversation',scenario:'2.5-year hardware refresh',
+   script:`Frame: "You're coming up on your hardware refresh — this is included, and the goal is zero downtime for your officers."\n\nLogistics: confirm units, shipping, and the RMA/return of old devices.\n\nTiming: schedule around shifts so nobody is without a device.\n\nValue: use it as a touchpoint — any new use cases or teams to bring on?\n\nClose: confirm the refresh date and the point of contact on their side.`},
+  {id:'tt_risk',title:'At-risk / save-play check-in',scenario:'Health or cases look strained',
+   script:`Open honestly: "I noticed a few things I want to get ahead of — some open cases and lighter usage — and I'd rather talk about it directly."\n\nListen first: let them tell you what's actually going on before you pitch fixes.\n\nOwn it: name what Axon will do, with dates and owners.\n\nRebuild the plan: agree on 2-3 concrete steps that rebuild confidence.\n\nClose: set a short follow-up so they see momentum.`},
+  {id:'tt_adoption',title:'Adoption / training nudge',scenario:'Usage is below target',
+   script:`Frame: "You're paying for capabilities your team isn't fully using yet — let's fix that."\n\nSpecifics: point to the exact features/products with low adoption.\n\nRemove friction: offer Axon Academy training, office hours, or a quick enablement session.\n\nMake it easy: pick one workflow to drive this month rather than boiling the ocean.\n\nClose: schedule the training and identify a champion.`},
+];
+function talkTrackById(id){ return TALK_TRACKS.find(t=>t.id===id); }
+
+// ---- Success plan templates (by task type) ----
+// Each type seeds objectives + milestones. Milestones carry guidance and
+// pre-attached resources (email templates, talk tracks, resource-library links)
+// so the plan is actionable, not just a checklist. `day` = offset from creation.
+const PLAN_TEMPLATES={
+  onboarding:{ label:'Onboarding (new logo)', desc:'Stand up a new customer and drive first value.',
+    objectives:[
+      'Achieve first measurable value within 90 days of onboarding',
+      'Drive adoption of purchased Axon products across the agency',
+      'Establish executive alignment and a clear path to renewal'
+    ],
+    milestones:[
+      {day:7,title:'Executive kickoff & welcome call',detail:'Introduce the CS team, confirm goals and success criteria, and set the check-in cadence.',resources:[{kind:'email',id:'cust_welcome'},{kind:'talktrack',id:'tt_kickoff'},{kind:'resource',id:'r1'}]},
+      {day:14,title:'Map stakeholders & define success criteria',detail:'Identify the economic buyer, admins and champions; capture what success looks like in plan discovery.',resources:[{kind:'resource',id:'r1'}]},
+      {day:30,title:'Deployment & provisioning',detail:'Confirm hardware/software provisioned, Evidence.com configured, and integrations in place.',resources:[{kind:'resource',id:'r4'}]},
+      {day:45,title:'Admin & end-user training',detail:'Schedule Axon Academy training and confirm admins are certified.',resources:[{kind:'resource',id:'r3'},{kind:'email',id:'cust_product'}]},
+      {day:60,title:'Go-live / first adoption checkpoint',detail:'Verify real usage, review adoption metrics, and clear any blockers.',resources:[{kind:'talktrack',id:'tt_adoption'}]},
+      {day:90,title:'90-day value review & QBR',detail:'Recap value delivered against goals and align on the next quarter.',resources:[{kind:'talktrack',id:'tt_qbr'},{kind:'email',id:'cust_followup'}]},
+    ]},
+  renewal:{ label:'Renewal', desc:'Drive an on-time, full-value renewal.',
+    objectives:[
+      'Secure an on-time, full-value renewal',
+      'Quantify and present the value delivered',
+      'Surface and de-risk any blockers early'
+    ],
+    milestones:[
+      {day:7,title:'Renewal readiness review',detail:'Run the renewal readiness checklist and confirm the opportunity is staged correctly.',resources:[{kind:'email',id:'int_renewal'}]},
+      {day:14,title:'Build the value recap',detail:'Assemble usage, outcomes and support wins into a value recap deck.',resources:[{kind:'resource',id:'r5'},{kind:'talktrack',id:'tt_renewal'}]},
+      {day:30,title:'Executive value conversation',detail:'Present the value recap; confirm budget, timeline and decision process.',resources:[{kind:'email',id:'cust_renewal'},{kind:'talktrack',id:'tt_renewal'}]},
+      {day:45,title:'Proposal & paperwork',detail:'Send the renewal proposal and align procurement and legal.',resources:[]},
+      {day:60,title:'Confirm renewal / next steps',detail:'Close the renewal or document the path forward and any risks.',resources:[{kind:'email',id:'int_renewal'}]},
+    ]},
+  tap:{ label:'TAP hardware refresh', desc:'Complete the 2.5-year hardware refresh cleanly.',
+    objectives:[
+      'Complete the hardware refresh before the warranty lapses',
+      'Keep officers equipped with no downtime',
+      'Use the refresh as a value & expansion touchpoint'
+    ],
+    milestones:[
+      {day:7,title:'Confirm refresh eligibility & timeline',detail:'Verify contract dates and the units eligible for the TAP refresh.',resources:[{kind:'email',id:'int_tap'}]},
+      {day:14,title:'Coordinate with the customer',detail:'Schedule the refresh conversation and set expectations on logistics.',resources:[{kind:'email',id:'cust_tap'},{kind:'talktrack',id:'tt_tap'}]},
+      {day:30,title:'Align ops / fleet / logistics',detail:'Confirm shipping, provisioning and RMA of the old units.',resources:[{kind:'resource',id:'r2'}]},
+      {day:45,title:'Execute the refresh',detail:'Ship/deploy the new hardware and confirm activation.',resources:[]},
+      {day:60,title:'Confirm completion & capture value',detail:'Verify all units are refreshed, log the outcome, and look for expansion.',resources:[{kind:'talktrack',id:'tt_qbr'}]},
+    ]},
+};
+const PLAN_TYPE_ORDER=['onboarding','renewal','tap'];
+function planTypeLabel(t){ return (PLAN_TEMPLATES[t]||PLAN_TEMPLATES.onboarding).label; }
+function planTypeFor(a){
+  if(newLogo(a)) return 'onboarding';
+  if(a.tapStatus==='overdue'||a.tapStatus==='duesoon') return 'tap';
+  if(a.dclose!=null && a.dclose<=365) return 'renewal';
+  return 'onboarding';
+}
+function generatePlan(id,type){
   const a=STATE.accounts.find(x=>x.id===id); if(!a) return;
+  type = PLAN_TEMPLATES[type] ? type : planTypeFor(a);
+  const tpl=PLAN_TEMPLATES[type];
   const base=new Date();
-  const ms=[]; const uid=()=>'m'+Math.random().toString(36).slice(2,9);
-  const add=(days,title)=>ms.push({id:uid(),title,due:sfDate(new Date(base.getTime()+days*864e5)),done:false});
-  add(7,'Executive kickoff & welcome call');
-  add(14,'Map stakeholders & define success criteria');
-  add(30,'Deployment & provisioning');
-  add(45,'Admin & end-user training');
-  add(60,'Go-live / first adoption checkpoint');
-  add(90,'90-day value review & QBR');
-  if(a.highCases>0 || a.health<60) add(21,'Resolve open support escalations before onboarding milestones');
-  if(a.dclose<=365) add(Math.max(30,a.dclose-60),'Early renewal planning & value recap');
+  const uid=()=>'m'+Math.random().toString(36).slice(2,9);
+  const ms=tpl.milestones.map(m=>({
+    id:uid(), title:m.title, detail:m.detail||'', note:'',
+    resources:(m.resources||[]).map(r=>({kind:r.kind,id:r.id})),
+    due:sfDate(new Date(base.getTime()+m.day*864e5)), done:false
+  }));
+  // Risk-aware addition: clear blocking support before other milestones.
+  if(a.highCases>0 || a.health<60) ms.push({id:uid(),title:'Resolve open support escalations',detail:'Clear high/urgent cases that block progress before the other milestones.',note:'',resources:[{kind:'email',id:'int_escalation'}],due:sfDate(new Date(base.getTime()+21*864e5)),done:false});
   ms.sort((x,y)=> x.due<y.due?-1:1);
-  const objectives=[
-    'Achieve first measurable value within 90 days of onboarding',
-    'Drive adoption of purchased Axon products across the agency',
-    'Establish executive alignment and a clear path to renewal'
-  ];
-  plans[id]={acctId:id,created:new Date().toISOString(),updatedAt:new Date().toISOString(),objectives,milestones:ms,notes:'',discovery:{},auto:true};
+  plans[id]={acctId:id,planType:type,created:new Date().toISOString(),updatedAt:new Date().toISOString(),objectives:tpl.objectives.slice(),milestones:ms,notes:'',discovery:{},auto:true};
   savePlans();
 }
 function generateAllNewLogos(){
@@ -981,7 +1049,7 @@ function generateAllNewLogos(){
   toast(`Generated ${logos.length} success plan${logos.length===1?'':'s'} for new-logo accounts.`);
   route();
 }
-function createOrOpenPlan(id){ if(!plans[id]) generatePlan(id); setTab('plans'); openPlan(id); }
+function createOrOpenPlan(id,type){ if(!plans[id]) generatePlan(id,type); setTab('plans'); openPlan(id); }
 function planDueSoonCount(p){ return (p&&p.milestones||[]).filter(m=>!m.done && daysSince(m.due)!=null && daysSince(m.due)>=-14).length; }
 let plansKpiFilter=null; // null | 'active' | 'dueSoon' — set by clicking a KPI tile
 function setPlansKpi(k){ plansKpiFilter = plansKpiFilter===k?null:k; route(); }
@@ -1040,7 +1108,15 @@ function openPlan(id){
   <div class="bd">
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Progress <span class="hint">${p.milestones.filter(m=>m.done).length} of ${p.milestones.length} milestones complete</span></h3>
       <div class="progress"><i style="width:${prog}%"></i></div>
-      <p class="mini" style="margin-top:8px">Plan ${p.auto?'auto-generated':'created'} ${new Date(p.created).toLocaleDateString()} · saved in your browser.</p>
+      <div class="row-actions" style="margin-top:10px;align-items:center">
+        <span class="pill p-blue">${esc(planTypeLabel(p.planType))} plan</span>
+        <label class="mini" style="margin-left:4px">Switch template</label>
+        <select class="select" onchange="if(this.value)regenPlanAs('${id}',this.value)">
+          <option value="">Rebuild from…</option>
+          ${PLAN_TYPE_ORDER.map(t=>`<option value="${t}">${esc(PLAN_TEMPLATES[t].label)}</option>`).join('')}
+        </select>
+      </div>
+      <p class="mini" style="margin-top:8px">Plan ${p.auto?'auto-generated':'created'} ${new Date(p.created).toLocaleDateString()} · saved in your browser. Click a milestone's <b>Open</b> button for guidance, talk tracks and email templates.</p>
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Objectives <span class="hint">one per line</span></h3>
       <textarea class="obj-in" id="planObj" oninput="setPlanObjectives('${id}',this.value)">${esc((p.objectives||[]).join('\n'))}</textarea>
@@ -1062,13 +1138,87 @@ function openPlan(id){
   showOverlay();
 }
 function msRow(id,m){
+  const rc=(m.resources||[]).length;
   return `<div class="milestone${m.done?' done':''}" data-ms="${m.id}">
     <input type="checkbox" ${m.done?'checked':''} onchange="togglePlanMs('${id}','${m.id}',this.checked)">
     <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${id}','${m.id}',this.value)">
     <input type="date" value="${esc(m.due||'')}" onchange="editPlanMsDue('${id}','${m.id}',this.value)">
+    <button class="btn sm" onclick="openPlanStep('${id}','${m.id}')">Open${rc?` · ${rc}`:''}</button>
     <button class="btn sm" onclick="removePlanMs('${id}','${m.id}')">Remove</button>
   </div>`;
 }
+// ---- Plan step detail (click into a milestone) ----
+const STEP_RES_KINDS={email:'Email template',talktrack:'Talk track',resource:'Resource'};
+function resourceById(rid){ return resources.find(r=>r.id===rid); }
+function stepResLabel(r){
+  if(r.kind==='email'){ const t=EMAIL_TEMPLATES.find(x=>x.id===r.id); return t?t.name:'Email template'; }
+  if(r.kind==='talktrack'){ const t=talkTrackById(r.id); return t?t.title:'Talk track'; }
+  const res=resourceById(r.id); return res?res.title:'Resource';
+}
+function openPlanStep(id,mid){
+  const p=plans[id]; const a=STATE.accounts.find(x=>x.id===id); if(!p||!a) return;
+  const m=p.milestones.find(x=>x.id===mid); if(!m){ openPlan(id); return; }
+  m.resources=m.resources||[];
+  const overdue=!m.done && daysSince(m.due)!=null && daysSince(m.due)>0;
+  const resRows=m.resources.length?m.resources.map((r,i)=>{
+    let action='';
+    if(r.kind==='email') action=`<button class="btn primary sm" onclick="planStepEmail('${id}','${r.id}')">Draft email</button>`;
+    else if(r.kind==='talktrack') action=`<button class="btn sm" onclick="openTalkTrack('${r.id}','${id}','${mid}')">Open talk track</button>`;
+    else { const res=resourceById(r.id); action=res?`<a class="btn sm" href="${esc(res.url)}" target="_blank" rel="noopener">Open</a>`:'<span class="mini">missing</span>'; }
+    return `<div class="resrow"><span><span class="pill p-gray" style="margin-right:8px">${esc(STEP_RES_KINDS[r.kind]||r.kind)}</span><b>${esc(stepResLabel(r))}</b></span><span class="row-actions">${action}<button class="btn sm" onclick="removeStepResource('${id}','${mid}',${i})">✕</button></span></div>`;
+  }).join(''):'<p class="mini">No resources attached yet — add an email template, talk track or resource below.</p>';
+  const sheet=$('#sheet');
+  sheet.innerHTML=`<div class="hd"><div><h2>${esc(m.title)}</h2><div class="mini">Success plan step · ${esc(a.name)} · <span class="pill ${m.done?'p-green':overdue?'p-red':'p-amber'}">${m.done?'Complete':overdue?'Overdue':(m.due?'Due '+esc(m.due):'Open')}</span></div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  <div class="bd">
+    <div class="row-actions" style="margin-bottom:14px">
+      <button class="btn" onclick="openPlan('${id}')">← Back to plan</button>
+      <button class="btn ${m.done?'':'primary'}" onclick="togglePlanStepDone('${id}','${mid}',${!m.done})">${m.done?'Mark not done':'Mark done'}</button>
+    </div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Step details</h3>
+      <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:8px 0 4px">Title</label>
+      <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${id}','${mid}',this.value)" style="width:100%;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
+      <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:12px 0 4px">Due</label>
+      <input type="date" value="${esc(m.due||'')}" onchange="editPlanMsDue('${id}','${mid}',this.value)" style="border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink);color-scheme:dark">
+      <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:12px 0 4px">Guidance</label>
+      <textarea class="notes-in" style="min-height:60px" placeholder="What this step involves…" oninput="setStepDetail('${id}','${mid}',this.value)">${esc(m.detail||'')}</textarea>
+    </div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Resources for this step <span class="hint">email templates, talk tracks &amp; guides — act on them right here</span></h3>
+      <div class="reslist">${resRows}</div>
+      <div class="row-actions" style="margin-top:12px;flex-wrap:wrap;align-items:center">
+        <select class="select" id="stepResPick">
+          <optgroup label="Email templates">${EMAIL_TEMPLATES.map(t=>`<option value="email:${t.id}">${esc(t.name)}</option>`).join('')}</optgroup>
+          <optgroup label="Talk tracks">${TALK_TRACKS.map(t=>`<option value="talktrack:${t.id}">${esc(t.title)}</option>`).join('')}</optgroup>
+          <optgroup label="Resource library">${resources.map(r=>`<option value="resource:${r.id}">${esc(r.title)}</option>`).join('')}</optgroup>
+        </select>
+        <button class="btn primary sm" onclick="addStepResourceFromPicker('${id}','${mid}')">Attach</button>
+      </div>
+    </div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Step notes <span class="hint">what happened / what's next on this step</span></h3>
+      <textarea class="notes-in" placeholder="Progress, blockers, who owns the next action…" oninput="setStepNote('${id}','${mid}',this.value)">${esc(m.note||'')}</textarea>
+    </div>
+  </div>`;
+  showOverlay();
+}
+function setStepDetail(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.detail=v; touchPlan(id); } }
+function setStepNote(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.note=v; touchPlan(id); } }
+function togglePlanStepDone(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.done=done; touchPlan(id); openPlanStep(id,mid); } }
+function addStepResource(id,mid,kind,refId){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m)return; m.resources=m.resources||[]; if(m.resources.some(r=>r.kind===kind&&r.id===refId)){ toast('Already attached to this step.'); return; } m.resources.push({kind,id:refId}); touchPlan(id); openPlanStep(id,mid); }
+function addStepResourceFromPicker(id,mid){ const sel=document.getElementById('stepResPick'); if(!sel||!sel.value) return; const [kind,refId]=sel.value.split(':'); addStepResource(id,mid,kind,refId); }
+function removeStepResource(id,mid,idx){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m||!m.resources)return; m.resources.splice(idx,1); touchPlan(id); openPlanStep(id,mid); }
+function planStepEmail(id,templateId){ const p=plans[id]; if(!p) return; closeSheet(); startEmailCompose(templateId,p.acctId); toast('Draft ready on Email Outreach — review, then send from your mail app.'); }
+function openTalkTrack(ttId,backId,backMid){
+  const t=talkTrackById(ttId); if(!t){ toast('Talk track not found.'); return; }
+  const sheet=$('#sheet');
+  const back=backId?`<button class="btn" onclick="openPlanStep('${backId}','${backMid}')">← Back to step</button>`:`<button class="btn" onclick="closeSheet()">Close</button>`;
+  sheet.innerHTML=`<div class="hd"><div><h2>${esc(t.title)}</h2><div class="mini">Talk track · ${esc(t.scenario)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  <div class="bd">
+    <div class="row-actions" style="margin-bottom:14px">${back}<button class="btn primary" onclick="copyTalkTrack('${ttId}')">Copy script</button></div>
+    <div class="card" style="box-shadow:none;margin:0"><pre style="white-space:pre-wrap;font:inherit;margin:0;color:var(--ink)">${esc(t.script)}</pre></div>
+  </div>`;
+  showOverlay();
+}
+async function copyTalkTrack(ttId){ const t=talkTrackById(ttId); if(!t) return; try{ await navigator.clipboard.writeText(t.title+'\n\n'+t.script); toast('Talk track copied.'); }catch(e){ toast('Could not copy — select the text manually.'); } }
+function regenPlanAs(id,type){ if(!PLAN_TEMPLATES[type]) return; if(!confirm('Rebuild this plan from the '+PLAN_TEMPLATES[type].label+' template? Your edits to milestones, objectives and notes will be replaced.')) { openPlan(id); return; } delete plans[id]; generatePlan(id,type); openPlan(id); toast('Plan rebuilt from the '+PLAN_TEMPLATES[type].label+' template.'); }
 function touchPlan(id){ if(plans[id]){ plans[id].updatedAt=new Date().toISOString(); savePlans(); } }
 function setPlanObjectives(id,v){ if(!plans[id])return; plans[id].objectives=v.split('\n').map(s=>s.trim()).filter(Boolean); touchPlan(id); }
 function setPlanNotes(id,v){ if(!plans[id])return; plans[id].notes=v; touchPlan(id); }
@@ -1857,6 +2007,82 @@ function ctaStPill(s){ const m={Open:'p-red','In Progress':'p-amber',Done:'p-gre
 let ctaKpiFilter=null; // null | 'open' | 'high' | 'overdue' — set by clicking a KPI tile
 function setCtaKpi(k){ ctaKpiFilter = ctaKpiFilter===k?null:k; route(); }
 function focusSuggestions(){ const el=document.getElementById('ctaSuggestions'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
+
+// ---- Bulk-apply CTAs (admin / manager) ----
+// Manager-controlled: pick a set of accounts (by filter and/or hand-picking) and
+// stamp the same CTA on all of them at once — e.g. "kick off Q3 business reviews"
+// across every Enterprise account, or a risk sweep across at-risk renewals.
+let bulkAdmin = LS.get('adminMode', false);
+let bulkFilter = {segment:'',tier:'',owner:'',flag:''};   // session-only
+const BULK_FLAGS=[['','Any account'],['atrisk','At-risk / watch health'],['renew90','Renewal within 90 days'],['newlogo','New logos'],['highcases','Open high/urgent cases'],['opp','Has an open opportunity']];
+function toggleAdmin(v){ bulkAdmin=!!v; LS.set('adminMode',bulkAdmin); route(); }
+function setBulkFilter(k,v){ bulkFilter[k]=v; route(); }
+function bulkCandidates(accts){
+  return accts.filter(a=>{
+    if(bulkFilter.segment && (a.segment||'')!==bulkFilter.segment) return false;
+    if(bulkFilter.tier && a.tier!==bulkFilter.tier) return false;
+    if(bulkFilter.owner && a.ownerName!==bulkFilter.owner) return false;
+    switch(bulkFilter.flag){
+      case 'atrisk': if(a.tier==='healthy') return false; break;
+      case 'renew90': if(!(a.dclose!=null && a.dclose<=90)) return false; break;
+      case 'newlogo': if(!newLogo(a)) return false; break;
+      case 'highcases': if(!(a.highCases>0)) return false; break;
+      case 'opp': if(!(a.opps&&a.opps.length>0)) return false; break;
+    }
+    return true;
+  }).sort((a,b)=> b.riskARR-a.riskARR);
+}
+function bulkSelectAll(check){ document.querySelectorAll('#bulkCtaList input[type=checkbox]').forEach(cb=>{ cb.checked=!!check; }); }
+function applyBulkCtas(){
+  const type=$('#bulkCtaType').value, pri=$('#bulkCtaPri').value, due=$('#bulkCtaDue').value;
+  const title=($('#bulkCtaTitle').value||'').trim();
+  const ids=[...document.querySelectorAll('#bulkCtaList input[type=checkbox]:checked')].map(cb=>cb.value);
+  if(!ids.length){ toast('Select at least one account.'); return; }
+  if(!title){ toast('Add a short description for the CTA.'); return; }
+  let added=0, skipped=0;
+  ids.forEach(acctId=>{
+    if(ctas.some(c=>c.acctId===acctId && c.type===type && c.status!=='Done')){ skipped++; return; }
+    const a=STATE.accounts.find(x=>x.id===acctId);
+    ctas.push({id:cid(),type,acctId,name:a?a.name:'',priority:pri,due,title,status:'Open',source:'Bulk',createdAt:new Date().toISOString()});
+    added++;
+  });
+  saveCtas();
+  toast(`Applied CTA to ${added} account${added===1?'':'s'}${skipped?` · skipped ${skipped} with an open ${type} CTA`:''}.`);
+  route();
+}
+function bulkCtaCard(accts){
+  if(!bulkAdmin){
+    return `<div class="card" style="box-shadow:none;border-style:dashed;margin:0 0 16px"><h3 style="border:none;margin:0 0 6px">Bulk-apply CTAs <span class="hint">manager / admin</span></h3>
+      <p class="mini" style="margin:0 0 10px">Stamp the same CTA across a set of accounts at once — filter by segment, health, owner or risk, then hand-pick. Turn on manager mode to use it.</p>
+      <button class="btn" onclick="toggleAdmin(true)">Enable manager mode</button></div>`;
+  }
+  const segs=[...new Set(accts.map(a=>a.segment).filter(Boolean))].sort();
+  const owners=[...new Set(accts.map(a=>a.ownerName).filter(Boolean))].sort();
+  const cand=bulkCandidates(accts);
+  const opt=(cur,list)=>list.map(([v,l])=>`<option value="${esc(v)}"${cur===v?' selected':''}>${esc(l)}</option>`).join('');
+  return `<div class="card" id="bulkCtaCard" style="box-shadow:none;border:1px solid var(--line);margin:0 0 16px">
+    <h3>Bulk-apply CTAs <span class="hint">manager / admin · one action across many accounts</span></h3>
+    <div class="row-actions" style="margin:0 0 12px"><span class="mini">Manager mode on.</span><button class="btn sm" onclick="toggleAdmin(false)">Turn off</button></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <select class="select" onchange="setBulkFilter('segment',this.value)"><option value="">All segments</option>${segs.map(s=>`<option value="${esc(s)}"${bulkFilter.segment===s?' selected':''}>${esc(s)}</option>`).join('')}</select>
+      <select class="select" onchange="setBulkFilter('tier',this.value)">${opt(bulkFilter.tier,[['','All health'],['healthy','Healthy'],['watch','Watch'],['atrisk','At-risk']])}</select>
+      <select class="select" onchange="setBulkFilter('owner',this.value)"><option value="">All CSMs</option>${owners.map(o=>`<option value="${esc(o)}"${bulkFilter.owner===o?' selected':''}>${esc(o)}</option>`).join('')}</select>
+      <select class="select" onchange="setBulkFilter('flag',this.value)">${opt(bulkFilter.flag,BULK_FLAGS)}</select>
+    </div>
+    <div class="row-actions" style="margin-bottom:6px"><b class="mini">${cand.length} account${cand.length===1?'':'s'} match</b><button class="btn sm" onclick="bulkSelectAll(true)">Select all</button><button class="btn sm" onclick="bulkSelectAll(false)">Clear</button></div>
+    <div id="bulkCtaList" class="bulk-list">
+      ${cand.length?cand.map(a=>`<label class="bulk-row"><input type="checkbox" value="${a.id}" checked><span class="bulk-name">${esc(a.name)}</span><span class="mini">${esc(a.ownerName)} · ${segmentPill(a)} ${tierPill(a.tier)} · renewal ${a.dclose>9000?'—':a.dclose+'d'}</span></label>`).join(''):'<p class="mini">No accounts match these filters in the current scope.</p>'}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
+      <select class="select" id="bulkCtaType">${CTA_TYPES.map(t=>`<option>${t}</option>`).join('')}</select>
+      <select class="select" id="bulkCtaPri"><option>High</option><option selected>Medium</option><option>Low</option></select>
+      <input type="date" class="select" id="bulkCtaDue" value="${sfDate(new Date(Date.now()+14*864e5))}">
+      <input type="text" id="bulkCtaTitle" placeholder="What needs to happen on each account?" style="flex:1;min-width:240px;border:1px solid var(--line);padding:8px 12px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
+      <button class="btn primary" onclick="applyBulkCtas()">Apply to selected</button>
+    </div>
+    <p class="mini" style="margin-top:8px;color:var(--muted)">Accounts that already have an open CTA of the same type are skipped automatically.</p>
+  </div>`;
+}
 function viewCTAs(accts){
   const inS=new Set(accts.map(a=>a.id));
   const mine=ctas.filter(c=> !c.acctId || inS.has(c.acctId));
@@ -1884,6 +2110,7 @@ function viewCTAs(accts){
     </div>
     <p class="mini" style="margin-top:8px;color:var(--muted)">TAP refresh data isn't tracked here yet, so log TAP CTAs here manually for now.</p>
   </div>
+  ${bulkCtaCard(accts)}
   ${suggestions.length?`<div class="card" id="ctaSuggestions" style="box-shadow:none;margin:0 0 16px"><h3>Suggested CTAs <span class="hint">auto-detected from live signals · add the ones worth tracking</span></h3>
     <table><thead><tr><th>Type</th><th>Action</th><th>Why</th><th></th></tr></thead><tbody>
     ${suggestions.slice(0,40).map(s=>`<tr><td>${ctaTypePill(s.type)}</td><td onclick="openAcct('${s.acctId}')" style="cursor:pointer"><b>${esc(s.title)}</b></td><td class="mini">${esc(s.reason)}</td><td><button class="btn sm" onclick="acceptAutoCta('${s.acctId}','${s.type}')">Add</button></td></tr>`).join('')}
@@ -2459,7 +2686,9 @@ Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWe
   setEscStatus:(i,s)=>{setEscStatus(i,s); if(STATE.tab==='escalations') route();},
   startEscalation,setEscReason,setEscProduct,toggleEscStep,
   setCsat,generateAllNewLogos,createOrOpenPlan,openPlan,setPlanObjectives,setPlanNotes,togglePlanMs,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
+  openPlanStep,setStepDetail,setStepNote,togglePlanStepDone,addStepResource,addStepResourceFromPicker,removeStepResource,planStepEmail,openTalkTrack,copyTalkTrack,regenPlanAs,
   setOwnerFilter,addCta,acceptAutoCta,ctaAction,delCta,quickCta,
+  toggleAdmin,setBulkFilter,bulkSelectAll,applyBulkCtas,
   addInsight,delResource,submitResource,setTarget,setAdoptionCfg,setUsageKpi,
   logActivity,delActivity,saveNextStep,clearNextStep,
   openCsmDrilldown,openCsmImprove,runCsmImproveAction,
