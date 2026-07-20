@@ -27,6 +27,7 @@ function savePlans(){ LS.set('plans',plans); }
 let ctas = LS.get('ctas',[]);             // Calls to Action (action items for CSMs)
 function saveCtas(){ LS.set('ctas',ctas); }
 let ownerFilter = '';                     // "View as CSM" auto-filter (owner name), session only
+let hierFilter = {segment:'', managers:[]}; // Org Drill-down: segment + a chosen set of managers, session only
 let tapState = LS.get('tapState',{});     // acctId -> {steps:[{id,label,done}], notes:'', refreshedAt}
 function saveTapState(){ LS.set('tapState',tapState); }
 
@@ -39,6 +40,70 @@ let insights = LS.get('insights',{});     // acctId -> [{t,note}]
 function saveInsights(){ LS.set('insights',insights); }
 function addInsight(acctId,note){ if(!note) return; const arr=insights[acctId]=insights[acctId]||[]; arr.push({t:new Date().toISOString(),note}); saveInsights(); }
 function insightCountSince(acctId,days){ const arr=insights[acctId]||[]; if(days==null) return arr.length; const cut=Date.now()-days*864e5; return arr.filter(n=>new Date(n.t).getTime()>=cut).length; }
+
+// ---------- quarterly customer surveys (optional CSM-run cadence) ----------
+// Distinct from the official biannual NPS survey (a.nps/a.npsDate, sourced from
+// Salesforce/Snowflake per Leana) — this tracks whether a CSM sent a per-account
+// survey this quarter and what came back, for teams that want to run that cadence.
+// Same boundary as Email Outreach: this app never sends anything itself, only
+// tracks that it happened and logs the result.
+let surveyState = LS.get('surveyState',{}); // acctId -> [{id,quarter,sentAt,status,score,notes}]
+function saveSurveyState(){ LS.set('surveyState',surveyState); }
+function currentQuarter(d){ d=d||new Date(); return d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1); }
+function surveysFor(acctId){ return surveyState[acctId]||[]; }
+function currentSurvey(acctId){ const q=currentQuarter(); return surveysFor(acctId).find(s=>s.quarter===q); }
+function ensureCurrentSurvey(acctId){
+  const q=currentQuarter();
+  const arr=surveyState[acctId]=surveyState[acctId]||[];
+  let s=arr.find(x=>x.quarter===q);
+  if(!s){ s={id:cid(),quarter:q,sentAt:null,status:'Not sent',score:null,notes:''}; arr.push(s); }
+  return s;
+}
+function logSurveySent(acctId){
+  const s=ensureCurrentSurvey(acctId);
+  s.status='Sent'; s.sentAt=new Date().toISOString();
+  saveSurveyState();
+  pushActivityEntry(acctId,'Note',`Quarterly survey sent (${s.quarter})`,'Logged via the account\'s quarterly survey tracker.');
+  toast('Survey marked sent for '+s.quarter+'.');
+  openAcct(acctId);
+}
+function setSurveyScore(acctId,val){
+  const s=ensureCurrentSurvey(acctId);
+  s.score = val===''?null:Math.max(0,Math.min(10,+val));
+  if(s.score!=null) s.status='Completed';
+  saveSurveyState();
+}
+function setSurveyNotes(acctId,val){ const s=ensureCurrentSurvey(acctId); s.notes=val; saveSurveyState(); }
+function surveyCard(a){
+  const q=currentQuarter();
+  const s=currentSurvey(a.id);
+  const past=surveysFor(a.id).filter(x=>x.quarter!==q).sort((x,y)=>y.quarter<x.quarter?-1:1);
+  const pill=st=>{ const m={'Not sent':'p-gray',Sent:'p-amber',Completed:'p-green'}; return `<span class="pill ${m[st]||'p-gray'}">${esc(st)}</span>`; };
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Quarterly customer survey <span class="hint">optional — separate from the official biannual NPS survey above</span></h3>
+    <p class="mini">This app doesn't send the survey for you (same boundary as Email Outreach) — it's a place to track whether one went out this quarter and log what came back, if your team runs this cadence.</p>
+    <div class="row-actions" style="margin:10px 0;align-items:center">
+      <b class="mini">${esc(q)}:</b> ${pill(s?s.status:'Not sent')}
+      <button class="btn sm" onclick="logSurveySent('${a.id}')">${s&&s.status!=='Not sent'?'Mark re-sent':'Mark sent'}</button>
+    </div>
+    <div class="row-actions" style="align-items:center;flex-wrap:wrap">
+      <label class="mini">Score (0–10)</label>
+      <input type="number" min="0" max="10" value="${s&&s.score!=null?s.score:''}" style="width:70px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setSurveyScore('${a.id}',this.value);openAcct('${a.id}')">
+      <input type="text" placeholder="Notes on the response…" value="${esc((s&&s.notes)||'')}" style="flex:1;min-width:180px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setSurveyNotes('${a.id}',this.value)">
+    </div>
+    ${past.length?`<div class="mini" style="margin-top:10px"><b>History:</b> ${past.map(p=>`${esc(p.quarter)}: ${pill(p.status)}${p.score!=null?' · score '+p.score:''}`).join(' · ')}</div>`:''}
+  </div>`;
+}
+function surveyCoverageCard(accts){
+  const q=currentQuarter();
+  let completed=0, sent=0, notSent=0;
+  accts.forEach(a=>{ const s=currentSurvey(a.id); if(!s||s.status==='Not sent') notSent++; else if(s.status==='Completed') completed++; else sent++; });
+  return `<div class="card"><h3>Quarterly survey coverage <span class="hint">${esc(q)} · optional cadence — only meaningful if your team runs it</span></h3>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Completed</div><div class="v" style="color:var(--green)">${completed}</div><div class="d">of ${accts.length} in scope</div></div>
+    <div class="kpi"><div class="l">Sent, awaiting response</div><div class="v" style="color:var(--amber)">${sent}</div><div class="d">follow up if it's gone stale</div></div>
+    <div class="kpi"><div class="l">Not sent yet</div><div class="v">${notSent}</div><div class="d">this quarter</div></div>
+  </div></div>`;
+}
 
 // ---------- rep activity log (calls, notes, next steps) ----------
 // Lets CSMs document outreach themselves — log a call/email/meeting/note and
@@ -58,19 +123,45 @@ function syncLastActFromActivity(acctId){
     a.lastAct=newest.t.slice(0,10);
   }
 }
+// ---- Salesforce write-back for logged activity ----
+// Pushes a call/email/meeting/note onto the account's activity log, then fires an
+// async Task write-back to Salesforce (real write in live mode, clearly-labeled
+// simulation in mock mode - see /api/write in backend/app/main.py). The entry's
+// sfSync status updates in place once the write settles, and re-renders Account
+// 360 only if that same account's sheet is still open.
+const ACT_SUBTYPE={Call:'Call',Email:'Email',Meeting:'Meeting',Note:'Task'};
+function pushActivityEntry(acctId,type,subject,notes){
+  const cur=acctActivity[acctId]=acctActivity[acctId]||{log:[],next:null};
+  cur.log=cur.log||[];
+  const entry={id:cid(),type,subject:subject||type,notes:notes||'',t:new Date().toISOString(),sfSync:'pending'};
+  cur.log.push(entry);
+  if(cur.log.length>80) cur.log=cur.log.slice(-80);
+  saveAcctActivity();
+  syncActivityToSalesforce(acctId,entry);
+  return entry;
+}
+async function syncActivityToSalesforce(acctId,entry){
+  const res=await sfWrite('Task',{
+    Subject:entry.subject, Description:entry.notes, ActivityDate:sfDate(new Date(entry.t)),
+    Status:'Completed', TaskSubtype:ACT_SUBTYPE[entry.type]||'Task', WhatId:acctId
+  });
+  entry.sfSync = res.written ? 'synced' : (res.error ? 'error' : 'simulated');
+  entry.sfDetail = res.detail || res.error || '';
+  saveAcctActivity();
+  delete commsCache[acctId];
+  const sheet=$('#sheet');
+  if(sheet && sheet.dataset.acctId===acctId && $('#overlay') && $('#overlay').classList.contains('show')) openAcct(acctId);
+}
 function logActivity(acctId){
   const type=($('#actType')&&$('#actType').value)||'Call';
   const subject=($('#actSubject')&&$('#actSubject').value||'').trim();
   const notes=($('#actNotes')&&$('#actNotes').value||'').trim();
   if(!subject && !notes){ toast('Add a subject or notes for this activity.'); return; }
-  const cur=acctActivity[acctId]=acctActivity[acctId]||{log:[],next:null};
-  cur.log=cur.log||[];
-  cur.log.push({id:cid(),type,subject:subject||type,notes,t:new Date().toISOString()});
-  saveAcctActivity();
+  pushActivityEntry(acctId,type,subject,notes);
   delete commsCache[acctId];
   syncLastActFromActivity(acctId);
   const a=STATE.accounts.find(x=>x.id===acctId); if(a) scoreAccount(a);
-  toast(type+' logged.');
+  toast(type+' logged — syncing to Salesforce…');
   openAcct(acctId);
 }
 function delActivity(acctId,aid){
@@ -239,6 +330,15 @@ async function soql(q,retry=2){
   }
 }
 function sfDate(d){return d.toISOString().slice(0,10);}
+// Write-back helper: really writes when running against live Salesforce, clearly
+// reports a simulated result in mock mode rather than pretending it worked.
+async function sfWrite(sobject,fields){
+  try{
+    const res=await fetch('/api/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sobject,fields})});
+    if(!res.ok){ let detail='Backend error '+res.status; try{ const b=await res.json(); if(b&&b.detail) detail=b.detail; }catch(e){} return {written:false,error:detail}; }
+    return await res.json();
+  }catch(e){ return {written:false,error:String((e&&e.message)||e)}; }
+}
 
 // ---------- state ----------
 let STATE = { accounts:[], users:{}, tree:null, nodeIndex:{}, scope:'ROOT', tab:'home' };
@@ -471,6 +571,29 @@ function scoreAccount(a){
 }
 function computeAll(){ STATE.accounts.forEach(a=>{ syncLastActFromActivity(a.id); scoreAccount(a); }); refreshCsat(); rebuildEsc(); }
 
+// ---------- account tiering beyond size ----------
+// Segment (Strategic/Enterprise/Mid-Market/SMB) is purely a size tier (renewal $).
+// This is a second axis — is there real expansion opportunity here, or is this a
+// churn-risk account to protect first — in the same spirit as the health-scoring
+// system, but answering "what's the play on this account" rather than "is it
+// healthy". Combines existing health/tier with growth-mix "attach depth" (how much
+// of lifetime value is Expansion/Transactional vs. pure Renewal) and NPS.
+function opportunityTier(a){
+  const g=a.growth||{Renewal:0,Expansion:0,Transactional:0};
+  const nonRenewal=(g.Expansion||0)+(g.Transactional||0);
+  const attachDepth = a.ltv>0 ? nonRenewal/a.ltv : 0; // 0 = pure-renewal book so far, closer to 1 = already heavily cross/up-sold
+  const detractor = a.nps!=null && a.nps<=6;
+  const promoter = a.nps!=null && a.nps>=9;
+  if(a.tier==='atrisk' && a.renewalAmount>=250000) return 'protect'; // big $ + churn risk — defend before anything else
+  if(a.tier==='atrisk') return 'nurture'; // at-risk but smaller — still needs attention, not a portfolio-level fire drill
+  if(attachDepth<0.15 && !detractor) return 'expand'; // healthy/watch, little cross-sell yet — room to grow
+  if(promoter && attachDepth<0.35) return 'expand';
+  return 'steady';
+}
+const OPP_TIER_LABELS={expand:'Expansion ready',protect:'Protect & retain',nurture:'Nurture',steady:'Steady / core'};
+const OPP_TIER_PILL={expand:'p-green',protect:'p-red',nurture:'p-amber',steady:'p-gray'};
+function opportunityPill(a){ const t=opportunityTier(a); return `<span class="pill ${OPP_TIER_PILL[t]}">${esc(OPP_TIER_LABELS[t])}</span>`; }
+
 // ---------- new-logo detection ----------
 function newLogo(a){ const ds=daysSince(a.firstPurchase); return ds!=null && ds<=365; }
 
@@ -496,13 +619,14 @@ const ESC_STEPS_TEMPLATE=[
 const freshEscSteps=()=>ESC_STEPS_TEMPLATE.map((label,i)=>({id:'s'+i,label,done:false}));
 function ensureEscState(acctId){
   let cur=escState[acctId]; let changed=false;
-  if(!cur){ cur=escState[acctId]={status:'Open',log:[],reasonCode:null,product:null,steps:freshEscSteps(),openedAt:new Date().toISOString()}; changed=true; }
+  if(!cur){ cur=escState[acctId]={status:'Open',log:[],reasonCode:null,product:null,steps:freshEscSteps(),openedAt:new Date().toISOString(),resolvedAt:null}; changed=true; }
   else{
     if(!cur.log){ cur.log=[]; changed=true; }
     if(!cur.steps||!cur.steps.length){ cur.steps=freshEscSteps(); changed=true; }
     if(cur.reasonCode===undefined){ cur.reasonCode=null; changed=true; }
     if(cur.product===undefined){ cur.product=null; changed=true; }
     if(!cur.openedAt){ cur.openedAt=new Date().toISOString(); changed=true; }
+    if(cur.resolvedAt===undefined){ cur.resolvedAt=null; changed=true; }
   }
   if(changed) LS.set('escState',escState);
   return cur;
@@ -537,6 +661,8 @@ function setEscStatus(acctId,status){
   const cur = ensureEscState(acctId);
   cur.status=status;
   if(status==='In Progress' && !cur.openedAt) cur.openedAt=new Date().toISOString();
+  if(status==='Resolved') cur.resolvedAt=new Date().toISOString();
+  else if(cur.resolvedAt) cur.resolvedAt=null; // reopened — clear so time-to-resolve only counts real resolutions
   cur.log.push({t:new Date().toISOString(), note:'Status → '+status});
   LS.set('escState',escState);
   try{ rebuildEsc(); }catch(e){ console.warn(e); }
@@ -587,7 +713,7 @@ function crumbPath(nodeId){
 }
 
 // ---------- shared cells ----------
-const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',renewals:'Renewals',tap:'TAP Refreshes',scorecard:'CSM Scorecard',usage:'Usage & Adoption',ctas:'CTAs',escalations:'Escalations',casewatch:'Case Watch',engagement:'Engagement',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Health Model',resources:'Resource Library'};
+const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',renewals:'Renewals',tap:'TAP Refreshes',scorecard:'CSM Scorecard',usage:'Usage & Adoption',ctas:'CTAs',escalations:'Escalations',casewatch:'Case Watch',engagement:'Engagement',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Health Model',resources:'Resource Library',execreport:'Executive Report'};
 const HUES=['ty','tb','tv','tg','ta','tr'];
 function hueFor(s){ const str=String(s||''); let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return HUES[h%HUES.length]; }
 function stateTag(a){ const st=a.state||'—'; return `<span class="tag ${hueFor(st)}">${esc(st)}</span>`; }
@@ -651,8 +777,10 @@ function route(){
   else if(STATE.tab==='worklist') app.innerHTML=viewWork(accts);
   else if(STATE.tab==='model') app.innerHTML=viewModel(accts);
   else if(STATE.tab==='resources') app.innerHTML=viewResources();
+  else if(STATE.tab==='execreport') app.innerHTML=viewExecReport(accts);
   if(STATE.tab==='overview') drawOverviewCharts(accts);
   if(STATE.tab==='home') drawHomeChart();
+  if(STATE.tab==='escalations') drawEscTrendChart(accts);
   const cb=$('#ctaBadge'); if(cb) cb.textContent = ctas.filter(c=>c.status!=='Done').length;
   const caseB=$('#caseBadge'); if(caseB) caseB.textContent = STATE.accounts.filter(a=>a.casesBlocked>0).length;
   const cadB=$('#cadenceBadge'); if(cadB) cadB.textContent = STATE.accounts.filter(a=>cadenceInfo(a).tier==='red').length;
@@ -738,6 +866,7 @@ function viewOverview(accts){
     ['Avg health (ARR-wtd)',r.health,r.red+' at-risk · '+r.amber+' watch · '+r.green+' healthy','model'],
     ['NPS in scope',npsR?npsR.score:'—',npsR?(npsR.n+' of '+accts.length+' accounts surveyed'):'no survey responses in scope','scorecard'],
     ['Open escalations',STATE.escList.filter(e=>accts.includes(e.acct)&&e.status!=='Resolved').length,r.high+' high/urgent · '+r.cases+' open cases','escalations'],
+    ['Expansion-ready accounts',accts.filter(a=>opportunityTier(a)==='expand').length,accts.filter(a=>opportunityTier(a)==='protect').length+' to protect & retain instead','hierarchy'],
   ];
   const topRisk=[...accts].sort((a,b)=>b.riskARR-a.riskARR).slice(0,8);
   return `
@@ -803,11 +932,123 @@ function drawOverviewCharts(accts){
 }
 function shortName(n){ return n.length>16?n.slice(0,15)+'…':n; }
 
+// ---- Executive Report (Sigma-replacement candidate) ----
+// Sigma today rolls up CS activity — TAP notes, other CTA activity, logged
+// timeline/activity — into leadership reporting (see NOTES.md's open question
+// "can we replace the executive reports as well?"). This environment has no
+// Sigma/warehouse credentials to push into directly, so this view answers the
+// question as far as it can: every number is computed live from the same
+// underlying signals (renewals, TAP, CTAs, escalations, logged activity) rather
+// than a synthetic stand-in, so it can serve as that report today. CSV export is
+// the practical bridge into Sigma or any other BI tool until a real pipeline exists.
+function execReportRows(accts){
+  return accts.map(a=>({
+    AccountId:a.id, Account:a.name, Owner:a.ownerName, Segment:a.segment||'', Tier:OPP_TIER_LABELS[opportunityTier(a)],
+    Health:a.health, RenewalARR:a.renewalAmount, ARRAtRisk:Math.round(a.riskARR), LifetimeValue:a.ltv||0,
+    OpenCases:a.openCases, HighUrgentCases:a.highCases, BlockedCases:a.casesBlocked||0, AgingCases:a.casesAging||0,
+    NPS:a.nps==null?'':a.nps, OpenCTAs:ctas.filter(c=>c.acctId===a.id&&c.status!=='Done').length,
+    TapStatus:a.tapStatus||'', EscalationStatus:peekEscState(a.id).status||'', LoggedActivityCount:(activityFor(a.id).log||[]).length,
+  }));
+}
+function downloadCSV(filename,rows){
+  if(!rows.length){ toast('Nothing to export.'); return; }
+  const headers=Object.keys(rows[0]);
+  const q=v=>{ const s=v==null?'':String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const csv=[headers.join(','),...rows.map(r=>headers.map(h=>q(r[h])).join(','))].join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement('a'); link.href=url; link.download=filename; document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function exportExecReportCsv(){
+  const accts=ownerFilter?accountsUnder(STATE.scope).filter(a=>a.ownerName===ownerFilter):accountsUnder(STATE.scope);
+  downloadCSV('axon-cs-executive-report-'+sfDate(new Date())+'.csv',execReportRows(accts));
+}
+function viewExecReport(accts){
+  const r=rollup(accts), npsR=npsRollup(accts), an=escAnalytics(accts);
+  const rows=execReportRows(accts);
+  const reasonEntries=Object.entries(an.reasonCounts).filter(([,n])=>n>0);
+  const reasonMax=Math.max(1,...reasonEntries.map(([,n])=>n));
+  const prodCounts={}; an.entries.forEach(e=>{ const p=e.product||'Untagged'; prodCounts[p]=(prodCounts[p]||0)+1; });
+  const prodEntries=Object.entries(prodCounts).sort((a,b)=>b[1]-a[1]);
+  const prodMax=Math.max(1,...prodEntries.map(([,n])=>n));
+  const bar=(label,n,max)=>`<div class="rollrow"><div class="rl">${esc(label)}</div><div class="rbarwrap"><div class="rbar" style="width:${max?Math.round(n/max*100):0}%"></div></div><div class="rn">${n}</div></div>`;
+  return `<div class="card"><h3>Executive report <span class="hint">candidate to replace the Sigma executive dashboard — computed live from this book, not a Sigma connection</span></h3>
+  <p class="mini" style="line-height:1.7">Sigma today rolls up CS activity — TAP notes, other CTA activity, and logged timeline/activity — into leadership reporting. This app has no Sigma/warehouse credentials in this environment, so it can't push there directly yet — but every number below is computed live from the same underlying signals (renewals, TAP, CTAs, escalations, logged activity), so it can stand in for that report today. Use <b>Export CSV</b> as the practical bridge into Sigma or any other BI tool until a real pipeline exists.</p>
+  <div class="kpis" style="margin:14px 0">
+    <div class="kpi"><div class="l">Renewal ARR</div><div class="v">${fmtMoney(r.arr)}</div><div class="d">${r.renewals} open renewals</div></div>
+    <div class="kpi accent"><div class="l">ARR at risk</div><div class="v">${fmtMoney(r.risk)}</div><div class="d">${Math.round(r.risk/(r.arr||1)*100)}% of book</div></div>
+    <div class="kpi"><div class="l">Growth (all types)</div><div class="v">${fmtMoney(r.growthTotal)}</div><div class="d">Renewal ${fmtMoney(r.growth.Renewal)} · Expansion ${fmtMoney(r.growth.Expansion)} · Transactional ${fmtMoney(r.growth.Transactional)}</div></div>
+    <div class="kpi"><div class="l">Engagement rate</div><div class="v">${r.engagementPct}%</div><div class="d">${r.inCadence} of ${r.n} in cadence</div></div>
+    <div class="kpi"><div class="l">NPS</div><div class="v">${npsR?npsR.score:'—'}</div><div class="d">${npsR?npsR.n+' survey responses':'no responses in scope'}</div></div>
+    <div class="kpi"><div class="l">Active escalations</div><div class="v">${an.active.length}</div><div class="d">mean time to resolve ${an.meanResolveDays==null?'—':an.meanResolveDays+'d'}</div></div>
+  </div>
+  <div class="row-actions" style="margin-bottom:4px">
+    <button class="btn primary" onclick="exportExecReportCsv()">Export CSV</button>
+    <span class="mini">${rows.length} account rows — renewal, health, cases, NPS, CTA/TAP/escalation counts and logged-activity volume per account.</span>
+  </div>
+  </div>
+  <div class="card"><h3>Escalations by reason &amp; product <span class="hint">all-time, in scope — see Escalations tab for the full analytics view</span></h3>
+  <div class="grid2">
+    <div><p class="mini" style="margin-bottom:8px"><b>By reason code</b></p>${reasonEntries.length?reasonEntries.map(([k,n])=>bar(k,n,reasonMax)).join(''):'<p class="mini">Nothing tagged yet.</p>'}</div>
+    <div><p class="mini" style="margin-bottom:8px"><b>By product</b></p>${prodEntries.length?prodEntries.map(([k,n])=>bar(k,n,prodMax)).join(''):'<p class="mini">Nothing tagged yet.</p>'}</div>
+  </div>
+  </div>
+  <div class="card"><h3>Account-level detail <span class="hint">${rows.length} accounts in scope</span></h3>
+  <div class="searchbar"><input id="xrsearch" placeholder="Filter accounts…" oninput="filterTable(this,'xrtbl')"></div>
+  <table id="xrtbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th>Tier</th><th class="num">Health</th><th class="num">Renewal ARR</th><th class="num">ARR at risk</th><th class="num">Open CTAs</th><th>TAP status</th><th>Escalation</th><th class="num">Logged activity</th></tr></thead><tbody>
+  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b></td><td>${esc(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${row.Health}</td><td class="num">${fmtMoney(row.RenewalARR)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${esc(row.TapStatus||'—')}</td><td>${esc(row.EscalationStatus||'—')}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
+  </tbody></table>
+  </div>`;
+}
+
 // ---- Hierarchy ----
+// hierFilter (segment + a chosen set of managers) lets Org Drill-down be sliced
+// by segment and/or restricted to a hand-picked set of managers, cutting across
+// the strict exec→director→manager→CSM walk rather than only scoping one node
+// at a time.
+function hierAccountsUnder(nodeId){
+  let accts=accountsUnder(nodeId);
+  if(hierFilter.segment) accts=accts.filter(a=>(a.segment||'')===hierFilter.segment);
+  return accts;
+}
+function allManagerNodes(){
+  return Object.values(STATE.nodeIndex).filter(n=>n.title==='Manager, Customer Success').sort((a,b)=>a.name<b.name?-1:1);
+}
+function setHierSegment(v){ hierFilter.segment=v; route(); }
+function toggleHierManager(id,checked){
+  const s=new Set(hierFilter.managers);
+  if(checked) s.add(id); else s.delete(id);
+  hierFilter.managers=[...s]; route();
+}
+function clearHierFilters(){ hierFilter={segment:'',managers:[]}; route(); }
+function hierFilterBar(){
+  const segs=[...new Set(STATE.accounts.map(a=>a.segment).filter(Boolean))].sort();
+  const mgrs=allManagerNodes();
+  const active=!!(hierFilter.segment||hierFilter.managers.length);
+  return `<div class="card" style="box-shadow:none;border-style:dashed;margin:0 0 16px"><h3 style="border:none;margin:0 0 10px">Filter this view <span class="hint">by segment and/or a chosen set of managers — cuts across the hierarchy walk</span></h3>
+  <div class="row-actions" style="margin-bottom:10px;flex-wrap:wrap">
+    <select class="select" onchange="setHierSegment(this.value)"><option value="">All segments</option>${segs.map(s=>`<option value="${esc(s)}"${hierFilter.segment===s?' selected':''}>${esc(s)}</option>`).join('')}</select>
+    ${active?'<button class="btn sm" onclick="clearHierFilters()">Clear filters</button>':''}
+  </div>
+  <details${hierFilter.managers.length?' open':''}><summary class="mini" style="cursor:pointer;font-weight:700;color:var(--ink)">Choose managers ${hierFilter.managers.length?`(${hierFilter.managers.length} selected)`:'(all)'}</summary>
+  <div class="bulk-list" style="margin-top:10px;max-height:180px">
+    ${mgrs.map(m=>`<label class="bulk-row"><input type="checkbox" value="${m.id}"${hierFilter.managers.includes(m.id)?' checked':''} onchange="toggleHierManager('${m.id}',this.checked)"><span class="bulk-name">${esc(m.name)}</span><span class="mini">${esc(m.title||'')}</span></label>`).join('')}
+  </div></details>
+  </div>`;
+}
 function viewHierarchy(){
   const node=STATE.nodeIndex[STATE.scope];
-  const kids=Object.values(node.children||{}).map(k=>({node:k,r:rollup(accountsUnder(k.id))})).sort((a,b)=>b.r.arr-a.r.arr);
-  let html=`<div class="card"><h3>${esc(node.name)} <span class="hint">${esc(node.title||'')} — drill into a team, manager, or rep</span></h3>`;
+  // A chosen set of managers overrides the normal parent→child walk entirely —
+  // managers can be grandchildren (or deeper) of the current scope, not just
+  // direct children, so this cuts across the hierarchy rather than nesting into it.
+  let kids = hierFilter.managers.length
+    ? hierFilter.managers.map(id=>STATE.nodeIndex[id]).filter(Boolean)
+    : Object.values(node.children||{});
+  kids=kids.map(k=>({node:k,r:rollup(hierAccountsUnder(k.id))})).sort((a,b)=>b.r.arr-a.r.arr);
+  let html=`<div class="card"><h3>${esc(node.name)} <span class="hint">${esc(node.title||'')} — drill into a team, manager, or rep</span></h3></div>`;
+  html+=hierFilterBar();
+  html+=`<div class="card">`;
   if(kids.length){
     html+=`<div class="treewrap">`+kids.map(k=>{
       const r=k.r, isLeaf=Object.keys(k.node.children||{}).length===0;
@@ -820,16 +1061,16 @@ function viewHierarchy(){
       </div></div>`;
     }).join('')+`</div>`;
   }
-  const direct=node.accounts||[];
+  const direct=hierFilter.managers.length ? [] : (node.accounts||[]).filter(a=>!hierFilter.segment || (a.segment||'')===hierFilter.segment);
   if(direct.length){
     html+=`<h3 style="margin-top:18px">Accounts owned here (${direct.length})</h3>`+accountTable([...direct].sort((a,b)=>b.riskARR-a.riskARR));
-  } else if(!kids.length){ html+=`<p class="mini">No sub-teams or accounts under this node in the current renewal book.</p>`; }
+  } else if(!kids.length){ html+=`<p class="mini">No sub-teams or accounts under this node match the current filters.</p>`; }
   html+=`</div>`;
   return html;
 }
 function accountTable(accts){
-  return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th class="num">Lifetime $</th><th class="num">Close</th><th class="num">Cases</th><th>CSAT</th><th>Health</th></tr></thead><tbody>
-  ${accts.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${esc(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td></tr>`).join('')}
+  return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th class="num">Lifetime $</th><th class="num">Close</th><th class="num">Cases</th><th>CSAT</th><th>Health</th><th>Tier</th></tr></thead><tbody>
+  ${accts.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${esc(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td>${opportunityPill(a)}</td></tr>`).join('')}
   </tbody></table>`;
 }
 
@@ -869,6 +1110,68 @@ function escRollupCard(rollupBase){
   </div>
   </div>`;
 }
+// ---- Escalation analytics (types, open duration, mean time-to-resolve, trend) ----
+// Computed from escState directly (every account this app has ever tracked as
+// escalated), not just STATE.escList (only accounts currently unhealthy) — so an
+// account that recovered still counts toward "resolved (all time)" and the mean
+// time-to-resolve. Per NOTES.md: the mock data has no real historical escalation
+// log, so the weekly trend is built from real open/resolve timestamps captured in
+// this browser rather than fabricated — thin at first, genuine as it accumulates.
+function escAnalytics(accts){
+  const inScope=new Set(accts.map(a=>a.id));
+  const nameOf=id=>{ const a=STATE.accounts.find(x=>x.id===id); return a?a.name:id; };
+  const entries=Object.keys(escState).filter(id=>inScope.has(id)).map(id=>Object.assign({acctId:id,name:nameOf(id)},escState[id]));
+  const active=entries.filter(e=>e.status!=='Resolved');
+  const resolved=entries.filter(e=>e.status==='Resolved');
+  const reasonCounts={}; ESC_REASONS.forEach(r=>reasonCounts[r]=0); reasonCounts.Untagged=0;
+  entries.forEach(e=>{ const r=e.reasonCode||'Untagged'; reasonCounts[r]=(reasonCounts[r]||0)+1; });
+  const durBuckets=[['0–3d',0,3],['4–7d',4,7],['8–14d',8,14],['15–30d',15,30],['31d+',31,Infinity]].map(([label,lo,hi])=>{
+    const n=active.filter(e=>{ if(!e.openedAt) return false; const d=Math.floor((Date.now()-new Date(e.openedAt).getTime())/864e5); return d>=lo&&d<=hi; }).length;
+    return {label,n};
+  });
+  const resolveDays=resolved.filter(e=>e.openedAt&&e.resolvedAt).map(e=>Math.max(0,Math.round((new Date(e.resolvedAt)-new Date(e.openedAt))/864e5)));
+  const meanResolveDays=resolveDays.length?Math.round(resolveDays.reduce((s,d)=>s+d,0)/resolveDays.length*10)/10:null;
+  const weeks=8, buckets=[];
+  const startOfWeek=d=>{ const x=new Date(d); const day=(x.getDay()+6)%7; x.setHours(0,0,0,0); x.setDate(x.getDate()-day); return x; };
+  const thisWeekStart=startOfWeek(new Date());
+  for(let i=weeks-1;i>=0;i--){ const ws=new Date(thisWeekStart); ws.setDate(ws.getDate()-i*7); const we=new Date(ws); we.setDate(we.getDate()+7); buckets.push({label:(ws.getMonth()+1)+'/'+ws.getDate(),start:ws,end:we,opened:0,resolved:0}); }
+  entries.forEach(e=>{
+    if(e.openedAt){ const d=new Date(e.openedAt); const b=buckets.find(b=>d>=b.start&&d<b.end); if(b)b.opened++; else if(d<buckets[0].start)buckets[0].opened++; }
+    if(e.resolvedAt){ const d=new Date(e.resolvedAt); const b=buckets.find(b=>d>=b.start&&d<b.end); if(b)b.resolved++; else if(d<buckets[0].start)buckets[0].resolved++; }
+  });
+  return {entries,active,resolved,reasonCounts,durBuckets,meanResolveDays,resolveCount:resolveDays.length,weekly:buckets};
+}
+function escAnalyticsCard(an){
+  const bar=(label,n,max)=>`<div class="rollrow"><div class="rl">${esc(label)}</div><div class="rbarwrap"><div class="rbar" style="width:${max?Math.round(n/max*100):0}%"></div></div><div class="rn">${n}</div></div>`;
+  const durMax=Math.max(1,...an.durBuckets.map(b=>b.n));
+  const reasonEntries=Object.entries(an.reasonCounts).filter(([,n])=>n>0);
+  const reasonMax=Math.max(1,...reasonEntries.map(([,n])=>n));
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Escalation analytics <span class="hint">types, open duration, resolution time &amp; trend — across every escalation this app has tracked, not just what's active today</span></h3>
+  <div class="kpis" style="margin-bottom:14px">
+    <div class="kpi"><div class="l">Mean time to resolve</div><div class="v">${an.meanResolveDays==null?'—':an.meanResolveDays+'d'}</div><div class="d">${an.resolveCount} resolved with both timestamps</div></div>
+    <div class="kpi"><div class="l">Active now</div><div class="v">${an.active.length}</div><div class="d">open + in progress</div></div>
+    <div class="kpi"><div class="l">Resolved (all time)</div><div class="v">${an.resolved.length}</div><div class="d">since this app started tracking</div></div>
+    <div class="kpi"><div class="l">Tracked (all time)</div><div class="v">${an.entries.length}</div><div class="d">distinct accounts ever escalated</div></div>
+  </div>
+  <div class="grid2">
+    <div><p class="mini" style="margin-bottom:8px"><b>Open duration (active queue)</b></p>${an.durBuckets.map(b=>bar(b.label,b.n,durMax)).join('')}</div>
+    <div><p class="mini" style="margin-bottom:8px"><b>By reason code (all-time)</b></p>${reasonEntries.length?reasonEntries.map(([k,n])=>bar(k,n,reasonMax)).join(''):'<p class="mini">Nothing tagged yet.</p>'}</div>
+  </div>
+  <p class="mini" style="margin:14px 0 6px"><b>Opened vs. resolved per week</b></p>
+  <div class="chartbox" style="height:200px"><canvas id="cEscTrend"></canvas></div>
+  <p class="mini" style="margin-top:8px;color:var(--muted)">Built from real open/resolve timestamps captured in your browser — thin until this app has been tracking escalations over real time. A Salesforce Escalation object with a true <code>CreatedDate</code> (see NOTES.md) would make this meaningful from day one instead of only going forward.</p>
+  </div>`;
+}
+function drawEscTrendChart(accts){
+  Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}}); charts={};
+  const an=escAnalytics(accts);
+  const el=$('#cEscTrend'); if(!el) return;
+  const openedColor=window.AXON_THEME?'#d64545':'#ff6b6b', resolvedColor=window.AXON_THEME?'#1a9e5c':'#3ddc97';
+  charts.escTrend=new Chart(el,{type:'bar',data:{labels:an.weekly.map(w=>w.label),datasets:[
+    {label:'Opened',data:an.weekly.map(w=>w.opened),backgroundColor:openedColor,borderRadius:window.AXON_THEME?0:5},
+    {label:'Resolved',data:an.weekly.map(w=>w.resolved),backgroundColor:resolvedColor,borderRadius:window.AXON_THEME?0:5}
+  ]},options:chartBaseOptions({})});
+}
 function escReasonSelect(e){
   return `<select class="select sm" onclick="event.stopPropagation()" onchange="event.stopPropagation();setEscReason('${e.acctId}',this.value)">
     <option value=""${!e.reasonCode?' selected':''}>— reason —</option>
@@ -907,6 +1210,7 @@ function viewEsc(accts){
     <option value="resolved"${escFilter==='resolved'?' selected':''}>Resolved only</option></select></div>`}
   </div>
   ${escRollupCard(rollupBase)}
+  ${escAnalyticsCard(escAnalytics(accts))}
   <div class="card"><table><thead><tr><th>Account</th><th>Issue</th><th>Severity</th><th>Reason</th><th>Product</th><th class="num">Days open</th><th>Status</th><th class="num">ARR at risk</th><th></th></tr></thead><tbody>
   ${list.map(e=>`<tr><td onclick="openAcct('${e.acctId}')" style="cursor:pointer"><b>${esc(e.acct.name)}</b><div class="mini">${esc(e.acct.ownerName)}</div></td><td>${esc(e.issue)}</td><td>${sevPill(e.sev)}</td><td>${escReasonSelect(e)}</td><td>${escProductSelect(e)}</td><td class="num">${e.daysOpen==null?'—':`<span class="${e.daysOpen>=14?'neg':''}">${e.daysOpen}d${e.daysOpen>=14?' ⚠':''}</span>`}</td><td>${statusPill(e.status)}</td><td class="num">${fmtMoney(e.acct.riskARR)}</td><td class="row-actions">${e.status!=='In Progress'&&e.status!=='Resolved'?`<button class="btn" onclick="event.stopPropagation();setEscStatus('${e.acctId}','In Progress')">Start</button>`:''}${e.status!=='Resolved'?`<button class="btn primary" onclick="event.stopPropagation();setEscStatus('${e.acctId}','Resolved')">Resolve</button>`:`<button class="btn" onclick="event.stopPropagation();setEscStatus('${e.acctId}','Open')">Reopen</button>`}</td></tr>`).join('')}
   </tbody></table>
@@ -1001,7 +1305,7 @@ const PLAN_TEMPLATES={
       {day:7,title:'Renewal readiness review',detail:'Run the renewal readiness checklist and confirm the opportunity is staged correctly.',resources:[{kind:'email',id:'int_renewal'}]},
       {day:14,title:'Build the value recap',detail:'Assemble usage, outcomes and support wins into a value recap deck.',resources:[{kind:'resource',id:'r5'},{kind:'talktrack',id:'tt_renewal'}]},
       {day:30,title:'Executive value conversation',detail:'Present the value recap; confirm budget, timeline and decision process.',resources:[{kind:'email',id:'cust_renewal'},{kind:'talktrack',id:'tt_renewal'}]},
-      {day:45,title:'Proposal & paperwork',detail:'Send the renewal proposal and align procurement and legal.',resources:[]},
+      {day:45,title:'Proposal & paperwork',detail:'Send the renewal proposal and align procurement and legal.',resources:[{kind:'email',id:'int_renewal'},{kind:'resource',id:'r5'}]},
       {day:60,title:'Confirm renewal / next steps',detail:'Close the renewal or document the path forward and any risks.',resources:[{kind:'email',id:'int_renewal'}]},
     ]},
   tap:{ label:'TAP hardware refresh', desc:'Complete the 2.5-year hardware refresh cleanly.',
@@ -1014,7 +1318,7 @@ const PLAN_TEMPLATES={
       {day:7,title:'Confirm refresh eligibility & timeline',detail:'Verify contract dates and the units eligible for the TAP refresh.',resources:[{kind:'email',id:'int_tap'}]},
       {day:14,title:'Coordinate with the customer',detail:'Schedule the refresh conversation and set expectations on logistics.',resources:[{kind:'email',id:'cust_tap'},{kind:'talktrack',id:'tt_tap'}]},
       {day:30,title:'Align ops / fleet / logistics',detail:'Confirm shipping, provisioning and RMA of the old units.',resources:[{kind:'resource',id:'r2'}]},
-      {day:45,title:'Execute the refresh',detail:'Ship/deploy the new hardware and confirm activation.',resources:[]},
+      {day:45,title:'Execute the refresh',detail:'Ship/deploy the new hardware and confirm activation.',resources:[{kind:'resource',id:'r2'},{kind:'email',id:'cust_tap'}]},
       {day:60,title:'Confirm completion & capture value',detail:'Verify all units are refreshed, log the outcome, and look for expansion.',resources:[{kind:'talktrack',id:'tt_qbr'}]},
     ]},
 };
@@ -1235,23 +1539,37 @@ function viewWork(accts){
   const items=[];
   accts.forEach(a=>{
     const st=a.opps[0]?a.opps[0].stage:'';
-    if(a.dclose<=90 && EARLY.has(st)) items.push({p:1,a,label:`Renewal closes in ${a.dclose}d but still "${st}" — advance the deal`,tag:'Renewal at risk'});
-    if(a.highCases>0) items.push({p:2,a,label:`${a.highCases} high/urgent support case(s) open — coordinate resolution`,tag:'Support escalation'});
+    if(a.dclose<=90 && EARLY.has(st)) items.push({p:1,a,label:`Renewal closes in ${a.dclose}d but still "${st}" — advance the deal`,tag:'Renewal at risk',bucket:a.dclose<=0?'overdue':'upcoming'});
+    if(a.highCases>0) items.push({p:2,a,label:`${a.highCases} high/urgent support case(s) open — coordinate resolution`,tag:'Support escalation',bucket:'overdue'});
     const ns=nextStepOpen(a.id);
     if(ns){
       const overdue=nextStepOverdue(ns);
-      items.push({p:overdue?1:2,a,label:`Next step: ${ns.text}${ns.due?` (due ${ns.due})`:''}`,tag:overdue?'Next step overdue':'Next step'});
+      const isNew=ns.updatedAt && daysSince(ns.updatedAt)!=null && daysSince(ns.updatedAt)<=1;
+      items.push({p:overdue?1:2,a,label:`Next step: ${ns.text}${ns.due?` (due ${ns.due})`:''}`,tag:overdue?'Next step overdue':'Next step',bucket:overdue?'overdue':(isNew?'new':'upcoming')});
     }
-    if(newLogo(a) && !plans[a.id]) items.push({p:2,a,label:`New logo (first purchase ${a.firstPurchase}) with no success plan — generate one`,tag:'Onboard'});
-    if(a.sentTier==='neg') items.push({p:3,a,label:`Strained sentiment (${a.sentiment}) from support history — proactively check in`,tag:'Sentiment risk'});
-    if(a.tier==='atrisk' && a.renewalAmount>1e6) items.push({p:3,a,label:`At-risk account with ${fmtMoney(a.renewalAmount)} renewal — build a save play`,tag:'Save play'});
-    if(a.dclose<=180 && a.dclose>90 && a.tier!=='healthy') items.push({p:4,a,label:`Renewal in ${a.dclose}d, health ${a.health} — start early engagement`,tag:'Get ahead'});
+    if(newLogo(a) && !plans[a.id]){ const ds=daysSince(a.firstPurchase); items.push({p:2,a,label:`New logo (first purchase ${a.firstPurchase}) with no success plan — generate one`,tag:'Onboard',bucket:(ds!=null&&ds<=14)?'new':'upcoming'}); }
+    if(a.sentTier==='neg') items.push({p:3,a,label:`Strained sentiment (${a.sentiment}) from support history — proactively check in`,tag:'Sentiment risk',bucket:'upcoming'});
+    if(a.tier==='atrisk' && a.renewalAmount>1e6) items.push({p:3,a,label:`At-risk account with ${fmtMoney(a.renewalAmount)} renewal — build a save play`,tag:'Save play',bucket:'upcoming'});
+    if(a.dclose<=180 && a.dclose>90 && a.tier!=='healthy') items.push({p:4,a,label:`Renewal in ${a.dclose}d, health ${a.health} — start early engagement`,tag:'Get ahead',bucket:'upcoming'});
   });
   items.sort((x,y)=> x.p-y.p || y.a.riskARR-x.a.riskARR);
-  return `<div class="card"><h3>Prioritized worklist <span class="hint">${items.length} actions across scope · ranked by urgency then revenue</span></h3>
-  <table><thead><tr><th>Priority action</th><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th>Health</th></tr></thead><tbody>
-  ${items.slice(0,50).map(it=>`<tr onclick="openAcct('${it.a.id}')"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b></td><td>${esc(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
-  </tbody></table>${items.length?'':'<p class="mini">Clear queue — nothing urgent in this scope.</p>'}</div>`;
+  const overdue=items.filter(it=>it.bucket==='overdue');
+  const freshItems=items.filter(it=>it.bucket==='new');
+  const upcoming=items.filter(it=>it.bucket==='upcoming');
+  const rows=list=>`<table><thead><tr><th>Priority action</th><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th>Health</th></tr></thead><tbody>
+    ${list.slice(0,50).map(it=>`<tr onclick="openAcct('${it.a.id}')"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b></td><td>${esc(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
+    </tbody></table>`;
+  const section=(title,hint,list)=> list.length?`<h3 style="margin-top:18px">${esc(title)} <span class="hint">${esc(hint)}</span></h3>${rows(list)}`:'';
+  return `<div class="card"><h3>Prioritized worklist <span class="hint">${items.length} actions across scope · grouped overdue → new → upcoming, ranked by urgency then revenue within each</span></h3>
+  <div class="kpis" style="margin-bottom:4px">
+    <div class="kpi"><div class="l">Overdue</div><div class="v" style="color:var(--red)">${overdue.length}</div><div class="d">already past due — clear these first</div></div>
+    <div class="kpi"><div class="l">New</div><div class="v" style="color:var(--amber)">${freshItems.length}</div><div class="d">surfaced in the last day or two</div></div>
+    <div class="kpi"><div class="l">Upcoming</div><div class="v">${upcoming.length}</div><div class="d">on the radar, not yet urgent</div></div>
+  </div>
+  ${section('Overdue','clear these first',overdue)}
+  ${section('New','freshly surfaced',freshItems)}
+  ${section('Upcoming',"worth getting ahead of",upcoming)}
+  ${items.length?'':'<p class="mini">Clear queue — nothing urgent in this scope.</p>'}</div>`;
 }
 
 // ---- Health model ----
@@ -1473,6 +1791,8 @@ function viewScorecard(accts){
     <label class="mini">Growth target $ / CSM<br><input type="number" min="0" step="5000" value="${scoreTargets.growthPerCsm}" style="width:110px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setTarget('growthPerCsm',this.value)"></label>
     <label class="mini">Insights target / CSM (90d)<br><input type="number" min="0" value="${scoreTargets.insightsPerCsm}" style="width:70px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setTarget('insightsPerCsm',this.value)"></label>
   </div></div>
+
+  ${surveyCoverageCard(accts)}
 
   ${needing.length?`<div class="card"><h3>Reps needing attention <span class="hint">${needing.length} below target — top action for each</span></h3>
   <div class="improve-list">${needing.map(o=>{ const top=o.steps[0]; return `<div class="improve-step ${top.sev}">
@@ -1713,14 +2033,20 @@ function viewResources(){
 function submitResource(){ const cat=($('#resCat').value||'').trim(), title=($('#resTitle').value||'').trim(), url=($('#resUrl').value||'').trim(); if(!title||!url){ toast('Add a title and a URL.'); return; } addResource(cat,title,url); toast('Resource added.'); }
 
 // ---- Communications (Salesforce history + locally logged activity) ----
+function sfSyncPill(status,detail){
+  const m={synced:['p-green','Synced to Salesforce'],simulated:['p-gray','Not synced (mock mode)'],error:['p-red','Sync failed'],pending:['p-amber','Syncing…']};
+  const x=m[status]; if(!x) return '';
+  return ` <span class="pill ${x[0]}" title="${esc(detail||'')}">${x[1]}</span>`;
+}
 function renderCommItem(it){
   const full=cleanComm(it.desc); const long=full.length>200; const short=long?full.slice(0,200)+'…':full;
   const del=it.localId?` <button class="btn sm" onclick="delActivity('${it.acctId}','${it.localId}')" title="Remove logged activity">✕</button>`:'';
-  return `<div class="ev"><div class="t">${fmtDate(it.d)} · ${commPill(it.sub)} · ${esc(it.who||'')}${it.local?' · logged here':''}${del}</div><div><b>${esc(commSubject(it.subj))}</b></div>${full?`<div class="mini commtext"><span class="cs">${esc(short)}</span><span class="cf hidden">${esc(full)}</span>${long?` <a href="#" onclick="toggleComm(event,this)">more</a>`:''}</div>`:''}</div>`;
+  const sync=it.local&&it.sfSync?sfSyncPill(it.sfSync,it.sfDetail):'';
+  return `<div class="ev"><div class="t">${fmtDate(it.d)} · ${commPill(it.sub)} · ${esc(it.who||'')}${it.local?' · logged here':''}${sync}${del}</div><div><b>${esc(commSubject(it.subj))}</b></div>${full?`<div class="mini commtext"><span class="cs">${esc(short)}</span><span class="cf hidden">${esc(full)}</span>${long?` <a href="#" onclick="toggleComm(event,this)">more</a>`:''}</div>`:''}</div>`;
 }
 async function loadAcctComms(id){
   const box=$('#acctComms'); if(!box) return;
-  const localLog=(activityFor(id).log||[]).map(e=>({d:e.t,sub:e.type,subj:e.subject,who:'You',desc:e.notes,local:true,localId:e.id,acctId:id}));
+  const localLog=(activityFor(id).log||[]).map(e=>({d:e.t,sub:e.type,subj:e.subject,who:'You',desc:e.notes,local:true,localId:e.id,acctId:id,sfSync:e.sfSync,sfDetail:e.sfDetail}));
   try{
     const [tasks,events]=await Promise.all([
       soql(`SELECT Id,Subject,TaskSubtype,ActivityDate,CreatedDate,Owner.Name,Description FROM Task WHERE AccountId='${id}' ORDER BY CreatedDate DESC LIMIT 12`),
@@ -1746,7 +2072,7 @@ function activityCard(a){
   const next=act.next;
   const overdue=nextStepOverdue(next);
   return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Activity &amp; next steps <span class="hint">log a call, email, or meeting · document what happens next</span></h3>
-  <p class="mini">Reps can keep the account current here — past outreach and the next action — without waiting on a Salesforce write-back. Logged touches also count toward engagement cadence.</p>
+  <p class="mini">Logging here counts toward engagement cadence immediately, and each entry attempts a Salesforce Task write-back — watch for the sync pill next to it below. In mock-data mode that sync is simulated and clearly labeled rather than pretending to succeed; switch to live Salesforce (see README) to have it write for real.</p>
 
   <div class="next-step${overdue?' overdue':''}" style="margin:12px 0 16px">
     <div class="mini" style="font-weight:700;color:var(--ink);margin-bottom:8px">Next step ${next?`<span class="pill ${overdue?'p-red':'p-amber'}" style="margin-left:6px">${overdue?'Overdue':(next.due?'Due '+esc(next.due):'Open')}</span>`:''}</div>
@@ -1850,7 +2176,8 @@ function openAcct(id){
   const sentColor = a.sentiment==null?'var(--muted)':a.sentTier==='pos'?'var(--green)':a.sentTier==='neu'?'var(--amber)':'var(--red)';
   const hasPlan=!!plans[id];
   const sheet=$('#sheet');
-  sheet.innerHTML=`<div class="hd"><div><h2>${esc(a.name)}</h2><div class="mini">${esc(a.state||'')} · Owner ${esc(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  sheet.dataset.acctId=id;
+  sheet.innerHTML=`<div class="hd"><div><h2>${esc(a.name)}</h2><div class="mini">${esc(a.state||'')} · Owner ${esc(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)} ${opportunityPill(a)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
   <div class="bd">
     <div class="row-actions" style="margin-bottom:14px">
       <button type="button" class="btn primary" onclick="createOrOpenPlan('${a.id}')">${hasPlan?'Open success plan':'Create success plan'}</button>
@@ -1871,6 +2198,17 @@ function openAcct(id){
       <div class="kpi"><div class="l">Growth (all-time)</div><div class="v">${fmtMoney((a.growth&&(a.growth.Renewal+a.growth.Expansion+a.growth.Transactional))||0)}</div><div class="d">Renewal/Expansion/Transactional</div></div>
       <div class="kpi"><div class="l">Adoption</div><div class="v" style="color:${adoptionColor(adoptionTier(a))}">${a.usage&&a.usage.adoptionPct!=null?a.usage.adoptionPct+'%':'—'}</div><div class="d">${a.usage&&a.usage.adoptionPct!=null?ADOPT_META[adoptionTier(a)][1]:'no usage data'}</div></div>
     </div>
+
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><details class="disc"><summary><h3 style="display:inline;border:none;margin:0">Where do I log this? <span class="hint">a quick guide to every input surface on this account</span></h3></summary>
+      <div class="disco-grid" style="margin-top:10px">
+        <div class="disco-field"><label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:4px">Customer insights</label><p class="mini">A synthesized takeaway about the customer — not a record of what happened, but what you learned (a competitive threat, an expansion signal, a champion change). Rolls up into this CSM's Scorecard insights count.</p></div>
+        <div class="disco-field"><label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:4px">Activity &amp; next steps</label><p class="mini">The factual record — log the call/email/meeting itself and the next action with a due date. Counts toward engagement cadence and attempts a Salesforce write-back.</p></div>
+        <div class="disco-field"><label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:4px">Escalation notes &amp; checklist</label><p class="mini">Only while this account has an active escalation — status, reason/product tags, the 6-step checklist, and a timestamped note log specific to that escalation.</p></div>
+        <div class="disco-field"><label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:4px">TAP checklist &amp; notes</label><p class="mini">Hardware-refresh-specific progress (inventory → quote → ship → install → RMA → close-out) — open it from the TAP Refreshes tab or the account's TAP status.</p></div>
+        <div class="disco-field"><label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:4px">Success Plan notes &amp; milestones</label><p class="mini">Plan-specific progress and context — objectives, milestone due dates/notes, and the optional discovery template. Open or create the plan above.</p></div>
+        <div class="disco-field"><label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:4px">Who's on this account</label><p class="mini">Not a note — a roster. Keep the Axon-side and customer-side contact list current so anyone can see who to talk to.</p></div>
+      </div>
+    </details></div>
 
     ${usageCard(a)}
 
@@ -1915,6 +2253,8 @@ function openAcct(id){
       <div class="row-actions" style="margin-top:6px"><button class="btn" onclick="addInsight('${a.id}',document.getElementById('insightIn').value);openAcct('${a.id}')">Log insight</button></div>
       <div class="tl" style="margin-top:12px">${(insights[a.id]&&insights[a.id].length)?insights[a.id].slice().reverse().map(n=>`<div class="ev"><div class="t">${new Date(n.t).toLocaleString()}</div><div>${esc(n.note)}</div></div>`).join(''):'<span class="mini">No insights logged yet for this account.</span>'}</div>
     </div>
+
+    ${surveyCard(a)}
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Resources &amp; guides <span class="hint">shared library — <a href="#" onclick="closeSheet();setTab('resources');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">manage in Resource Library</a></span></h3>
       ${resources.length?`<div class="reslist">${resources.map(r=>`<div class="resrow">${catTag(r.category,'margin-right:8px')}<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></div>`).join('')}</div>`:'<p class="mini">No resources in the library yet.</p>'}
@@ -2533,13 +2873,10 @@ function emailRecordDraft(action){
   });
   emailDrafts=emailDrafts.slice(0,40);
   saveEmailDrafts();
-  // Also log a light activity touch on the account when customer-facing
+  // Also log a light activity touch on the account when customer-facing, and
+  // write it back to Salesforce the same way a manually-logged call/email is.
   if(emailCompose.audience==='customer'&&emailCompose.acctId){
-    const cur=acctActivity[emailCompose.acctId]=acctActivity[emailCompose.acctId]||{log:[],next:null};
-    cur.log=cur.log||[];
-    cur.log.push({id:cid(),type:'Email',subject:emailCompose.subject||'(draft prepared)',notes:`Prepared via Email Outreach (${action}) — sent manually by CSM after review.`,t:new Date().toISOString()});
-    if(cur.log.length>80) cur.log=cur.log.slice(-80);
-    saveAcctActivity();
+    pushActivityEntry(emailCompose.acctId,'Email',emailCompose.subject||'(draft prepared)',`Prepared via Email Outreach (${action}) — sent manually by CSM after review.`);
     syncLastActFromActivity(emailCompose.acctId);
     if(a){ try{ scoreAccount(a); }catch(e){} }
   }
@@ -2683,7 +3020,7 @@ window.boot=boot; window.restart=restart;
 
 document.querySelectorAll('#tabs button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWeights,resetWeights,filterTable,toggleComm,addEscNote,setTab,
-  setEscStatus:(i,s)=>{setEscStatus(i,s); if(STATE.tab==='escalations') route();},
+  setEscStatus,
   startEscalation,setEscReason,setEscProduct,toggleEscStep,
   setCsat,generateAllNewLogos,createOrOpenPlan,openPlan,setPlanObjectives,setPlanNotes,togglePlanMs,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
   openPlanStep,setStepDetail,setStepNote,togglePlanStepDone,addStepResource,addStepResourceFromPicker,removeStepResource,planStepEmail,openTalkTrack,copyTalkTrack,regenPlanAs,

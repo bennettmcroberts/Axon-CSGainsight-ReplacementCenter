@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from .config import settings
 from .mock_engine import run_mock_query
-from .salesforce_client import SalesforceUnavailable, run_salesforce_query
+from .salesforce_client import SalesforceUnavailable, run_salesforce_create, run_salesforce_query
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 # Shared JS, Resource Library pages, and other static assets live under frontend/.
@@ -38,6 +38,11 @@ app.add_middleware(
 
 class SoqlRequest(BaseModel):
     query: str
+
+
+class WriteRequest(BaseModel):
+    sobject: str
+    fields: dict
 
 
 @app.get("/api/health")
@@ -68,6 +73,35 @@ def soql(body: SoqlRequest):
         raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
 
     return {"records": records, "totalSize": len(records), "done": True}
+
+
+@app.post("/api/write")
+def write_record(body: WriteRequest):
+    """Write-back for CSM-logged activity (calls/emails/meetings) so it lands in
+    Salesforce instead of staying stranded in this app's localStorage.
+
+    Only actually writes when running against live Salesforce (DATA_MODE=salesforce
+    with valid credentials) - in mock mode there's nothing real to write to, so this
+    clearly reports a simulated result rather than silently pretending to succeed.
+    """
+    mode = settings.effective_mode
+    if mode != "salesforce":
+        return {
+            "written": False,
+            "mode": mode,
+            "detail": (
+                "Mock-data mode - no live Salesforce connection is configured, so this "
+                "activity was not actually written back. Set DATA_MODE=salesforce with "
+                "valid credentials in backend/.env to enable real write-back."
+            ),
+        }
+    try:
+        record_id = run_salesforce_create(body.sobject, body.fields)
+        return {"written": True, "mode": mode, "id": record_id}
+    except SalesforceUnavailable as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}") from e
 
 
 if FRONTEND_ASSETS_DIR.exists():

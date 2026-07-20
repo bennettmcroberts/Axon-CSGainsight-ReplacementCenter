@@ -81,15 +81,16 @@ header.top::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3p
 nav.tabs{display:flex;flex-direction:column;gap:1px;padding:0 8px}
 nav.tabs button{border:none;border-radius:0;background:none;color:var(--muted);text-align:left;
   padding:11px 12px;font:inherit;font-weight:600;font-size:12px;letter-spacing:.03em;cursor:pointer;
-  display:flex;align-items:center;justify-content:space-between;gap:8px;transition:background .12s,color .12s}
+  display:flex;align-items:center;justify-content:flex-start;gap:8px;transition:background .12s,color .12s}
 nav.tabs button .ic{width:15px;height:15px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;margin-right:9px;opacity:.7}
 nav.tabs button span:first-of-type{display:flex;align-items:center}
+nav.tabs button:not(:has(.ic)){padding-left:36px}
 nav.tabs button:hover{background:var(--panel2);color:var(--ink)}
 nav.tabs button.active{background:rgba(255,230,0,.28);color:var(--ink);box-shadow:inset 3px 0 0 var(--yellow);font-weight:700}
 html[data-theme="dark"] nav.tabs button.active{background:rgba(255,230,0,.12);box-shadow:inset 3px 0 0 var(--yellow)}
-.side .sec{color:var(--muted2);font-size:9.5px;font-weight:800;letter-spacing:.16em;padding:18px 12px 6px;text-transform:uppercase}
+.side .sec{color:var(--muted2);font-size:9.5px;font-weight:800;letter-spacing:.16em;padding:18px 12px 6px 36px;text-transform:uppercase}
 .side .sec.sec-blue,.side .sec.sec-amber,.side .sec.sec-violet{color:var(--ink)}
-nav.tabs button .b{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:16px;padding:0 5px;
+nav.tabs button .b{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:16px;padding:0 5px;
   background:var(--red);color:#fff;font-size:10px;font-weight:800;border-radius:0}
 nav.tabs button.active .b{background:var(--yellow);color:#000}
 .side .sfoot{color:var(--muted2);font-size:10px;letter-spacing:.03em;padding:20px 16px 0;line-height:1.55}

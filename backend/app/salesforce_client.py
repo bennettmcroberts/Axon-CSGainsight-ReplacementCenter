@@ -54,6 +54,19 @@ def run_salesforce_query(query: str) -> list[dict]:
     return [_strip_attributes(r) for r in records]
 
 
+def run_salesforce_create(sobject: str, fields: dict) -> str:
+    """Creates a record of the given sObject type (e.g. "Task") and returns its Id.
+
+    Used for write-back of CSM-logged activity (calls/emails/meetings) so it
+    doesn't stay stranded in this app's localStorage - see README.md's
+    Salesforce write-back guidance.
+    """
+    sf = _client()
+    obj = getattr(sf, sobject)
+    result = obj.create(fields)
+    return result.get("id")
+
+
 def _strip_attributes(obj):
     if isinstance(obj, dict):
         return {k: _strip_attributes(v) for k, v in obj.items() if k != "attributes"}

@@ -258,6 +258,78 @@ back off the deferred list above and built them out:
   crosses the risk threshold) rather than a true historical open date — a real
   Salesforce escalation object with a `CreatedDate` would fix this outright.
 
+## Update: new feature asks (2026-07-20 batch)
+
+A fresh batch of suggestions for the Gainsight-replacement effort, captured as raised —
+not yet vetted against the stakeholder-conflict/prioritization framework used
+elsewhere in this doc (see "Conflicts" in the requirements doc's stakeholder
+synthesis). Grouped by theme; original intent preserved.
+
+### Success Plans
+- **Flesh out auto-generated Success Plans further**: make each milestone/step
+  clickable to drill into detail, and attach relevant resources directly to the
+  step/task itself (e.g. email templates, talk tracks) rather than just linking
+  out to the general Resource Library.
+- **Type-specific plan content**: the steps/resources attached should differ by
+  the *type* of plan (renewals vs. TAP vs. onboarding each need different
+  attached content, not one generic template).
+
+### Salesforce write-back
+- When a CSM sends an email (or logs a call) from this app, write that activity
+  back into Salesforce automatically — not just log it locally.
+- Resurfaced ask (per Stevie): **automate inputting emails and calls** — reduce
+  manual re-entry of the same activity into Salesforce.
+
+### CTAs
+- **Bulk-apply CTAs** to a set of accounts at once, admin-controlled (e.g. "add
+  this CTA to every account matching X").
+- Fine-tune the whole **Account 360 / CTA system** more broadly — go look
+  directly at how Gainsight structures this (C360 + CTA) as a reference point
+  for gaps in this app's version.
+
+### Escalations
+- Build out an actual **escalations analytics view** — Gainsight has a
+  dashboard for this. Needs: escalation **types/categories**, how long each has
+  been open, **mean time** (to resolution / by type), and **trend over time** —
+  not just a live snapshot of the current queue.
+
+### Tiering / prioritization ("today view")
+- Consider **tiering accounts on more than size** — factor in things like
+  expansion opportunity or churn risk, similar in spirit to the health-scoring
+  approach.
+- Give CSMs a single place to start each morning: a prioritized worklist
+  showing **new vs. overdue items**, ranked — effectively a refined/expanded
+  version of My Worklist.
+
+### Org Drill-down
+- Let Org Drill-down be **sliced by segment**, and filterable by a chosen
+  **set of managers** (not just the strict hierarchy walk).
+
+### Input / update surfaces
+- Give CSMs a dedicated place to **log updates on Escalations and TAP
+  refreshes** (status notes, progress) — may already partially overlap with
+  the existing Escalations note log and TAP notes field; worth confirming
+  that coverage actually meets the ask.
+- **Clarify what data CSMs can input at the account level overall**, and
+  specifically **where Customer Insights fits in the workflow** (when/how a
+  CSM is expected to log an insight, and what happens to it downstream).
+
+### Surveys
+- Open question: should CSMs be able to **send out a customer survey each
+  quarter** directly from this app, with a place to view/display the results?
+  Not yet decided whether this is in scope.
+
+### Sigma / executive reporting
+- Clarify **how this app's data connects to Sigma** — specifically, do TAP
+  notes, other CTA activity, and logged timeline/activity feed into the
+  executive reports currently built in Sigma?
+- Bigger open question: **could this app eventually replace the Sigma
+  executive reports** entirely, rather than just feeding them?
+
+These sit alongside the existing "Open Questions" / "deliberately not built"
+sections above — same status (raised, not resolved) until reviewed against the
+stakeholder-conflict framework this doc already uses.
+
 ## Custom fields this app assumes for live Salesforce parity
 
 The mock engine invents a few fields that don't exist in a stock Salesforce org. If

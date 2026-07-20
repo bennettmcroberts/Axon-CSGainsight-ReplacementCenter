@@ -1,4 +1,6 @@
 """Environment-driven configuration for the Axon CS Command Center backend."""
+from __future__ import annotations
+
 import os
 from pathlib import Path
 

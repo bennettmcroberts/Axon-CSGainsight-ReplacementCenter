@@ -96,16 +96,17 @@ html[data-theme="light"] .logo-word{text-shadow:none}
 nav.tabs{display:flex;flex-direction:column;gap:2px;padding:0 10px}
 nav.tabs button{border:none;border-radius:var(--radius-sm);background:none;color:#b8b9c0;text-align:left;
   padding:10px 12px;font:inherit;font-weight:600;font-size:12.5px;letter-spacing:.02em;cursor:pointer;
-  display:flex;align-items:center;justify-content:space-between;gap:8px;transition:background .15s,color .15s,transform .1s}
+  display:flex;align-items:center;justify-content:flex-start;gap:8px;transition:background .15s,color .15s,transform .1s}
 nav.tabs button .ic{width:16px;height:16px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;margin-right:9px;opacity:.85}
 nav.tabs button span:first-of-type{display:flex;align-items:center}
+nav.tabs button:not(:has(.ic)){padding-left:37px}
 nav.tabs button:hover{background:var(--panel2);color:#fff}
 nav.tabs button.active{background:linear-gradient(90deg,rgba(255,212,0,.16),rgba(94,200,255,.04) 70%,transparent);color:#fff;box-shadow:inset 2px 0 0 var(--yellow)}
-.side .sec{color:var(--muted2);font-size:10px;font-weight:800;letter-spacing:.12em;padding:16px 12px 6px;text-transform:uppercase}
+.side .sec{color:var(--muted2);font-size:10px;font-weight:800;letter-spacing:.12em;padding:16px 12px 6px 37px;text-transform:uppercase}
 .side .sec.sec-blue{color:var(--blue)}
 .side .sec.sec-amber{color:var(--amber)}
 .side .sec.sec-violet{color:var(--violet)}
-nav.tabs button .b{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:17px;padding:0 5px;
+nav.tabs button .b{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:17px;padding:0 5px;
   background:var(--red);color:#1a0505;font-size:10px;font-weight:800;border-radius:999px}
 nav.tabs button.active .b{background:var(--yellow);color:var(--yellow-ink)}
 .side .sfoot{color:var(--muted2);font-size:10.5px;letter-spacing:.02em;padding:20px 18px 0;line-height:1.6}
