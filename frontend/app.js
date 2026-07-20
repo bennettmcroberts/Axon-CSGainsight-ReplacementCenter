@@ -26,9 +26,6 @@ let plans = LS.get('plans',{});           // acctId -> plan object
 function savePlans(){ LS.set('plans',plans); }
 let ctas = LS.get('ctas',[]);             // Calls to Action (action items for CSMs)
 function saveCtas(){ LS.set('ctas',ctas); }
-let journeyState = LS.get('journeyState',{}); // {journeyId:{acctId:status}}
-function saveJourneys(){ LS.set('journeyState',journeyState); }
-let journeyOpen = LS.get('journeyOpen','welcome');
 let ownerFilter = '';                     // "View as CSM" auto-filter (owner name), session only
 let tapState = LS.get('tapState',{});     // acctId -> {steps:[{id,label,done}], notes:'', refreshedAt}
 function saveTapState(){ LS.set('tapState',tapState); }
@@ -107,10 +104,11 @@ function nextStepOverdue(n){ if(!n||!n.due) return false; const ds=daysSince(n.d
 let teamRoster = LS.get('teamRoster',{});   // acctId -> {axon:[{id,role,name}], customer:[{id,role,name}]}
 function saveTeamRoster(){ LS.set('teamRoster',teamRoster); }
 function teamFor(acctId){ return teamRoster[acctId] || {axon:[],customer:[]}; }
-function addTeamMember(acctId,side,role,name){
+function addTeamMember(acctId,side,role,name,email){
   if(!name||!name.trim()) return;
   const t=teamRoster[acctId]=teamRoster[acctId]||{axon:[],customer:[]};
-  t[side]=t[side]||[]; t[side].push({id:cid(),role:(role||'').trim()||'Contact',name:name.trim()});
+  t[side]=t[side]||[];
+  t[side].push({id:cid(),role:(role||'').trim()||'Contact',name:name.trim(),email:(email||'').trim()});
   saveTeamRoster(); openAcct(acctId);
 }
 function delTeamMember(acctId,side,mid){
@@ -119,12 +117,14 @@ function delTeamMember(acctId,side,mid){
   saveTeamRoster(); openAcct(acctId);
 }
 function teamSideList(acctId,side,members){
-  const inputRole=`tr_${side}_role_${acctId}`, inputName=`tr_${side}_name_${acctId}`;
-  return `${members.length?`<div class="reslist">${members.map(m=>`<div class="resrow"><span><span class="pill p-blue" style="margin-right:8px">${esc(m.role)}</span><b>${esc(m.name)}</b></span><button class="btn sm" onclick="delTeamMember('${acctId}','${side}','${m.id}')">✕</button></div>`).join('')}</div>`:'<p class="mini">Nobody documented yet.</p>'}
-  <div class="row-actions" style="margin-top:10px">
-    <input id="${inputRole}" placeholder="${side==='axon'?'Role (CSM, TAM, Fleet Installer…)':'Role (Chief, IT Admin…)'}" style="flex:1;min-width:120px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
-    <input id="${inputName}" placeholder="Name" style="flex:1;min-width:120px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onkeydown="if(event.key==='Enter'){addTeamMember('${acctId}','${side}',document.getElementById('${inputRole}').value,this.value);}">
-    <button class="btn sm" onclick="addTeamMember('${acctId}','${side}',document.getElementById('${inputRole}').value,document.getElementById('${inputName}').value)">+ Add</button>
+  const inputRole=`tr_${side}_role_${acctId}`, inputName=`tr_${side}_name_${acctId}`, inputEmail=`tr_${side}_email_${acctId}`;
+  const addFn=`addTeamMember('${acctId}','${side}',document.getElementById('${inputRole}').value,document.getElementById('${inputName}').value,document.getElementById('${inputEmail}').value)`;
+  return `${members.length?`<div class="reslist">${members.map(m=>`<div class="resrow"><span><span class="pill p-blue" style="margin-right:8px">${esc(m.role)}</span><b>${esc(m.name)}</b>${m.email?`<span class="mini" style="margin-left:8px">${esc(m.email)}</span>`:''}</span><button class="btn sm" onclick="delTeamMember('${acctId}','${side}','${m.id}')">✕</button></div>`).join('')}</div>`:'<p class="mini">Nobody documented yet.</p>'}
+  <div class="row-actions" style="margin-top:10px;flex-wrap:wrap">
+    <input id="${inputRole}" placeholder="${side==='axon'?'Role (CSM, TAM…)':'Role (Chief, IT Admin…)'}" style="flex:1;min-width:110px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
+    <input id="${inputName}" placeholder="Name" style="flex:1;min-width:110px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
+    <input id="${inputEmail}" type="email" placeholder="Email (for outreach)" style="flex:1.2;min-width:140px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onkeydown="if(event.key==='Enter'){${addFn};}">
+    <button class="btn sm" onclick="${addFn}">+ Add</button>
   </div>`;
 }
 function teamRosterCard(a){
@@ -170,6 +170,37 @@ function resourceCategories(){ return [...new Set(resources.map(r=>r.category))]
 let scoreTargets = LS.get('scoreTargets', {engagementPct:80, growthPerCsm:150000, insightsPerCsm:8});
 function saveTargets(){ LS.set('scoreTargets',scoreTargets); }
 function setTarget(k,v){ scoreTargets[k]=+v||0; saveTargets(); route(); }
+
+// ---------- usage / adoption thresholds ----------
+// Per Beatrice's (CSM) stakeholder finding, the #1 thing missing from Gainsight
+// is usage/adoption data — and crucially, the definition of "adopting vs. not"
+// is a business rule that varies by team. These cutoffs are editable (like the
+// scorecard targets / health weights) so a team can set what counts as adoption.
+// adoptingPct: at/above = "Adopting" · atRiskPct: below = "Not adopting".
+let adoptionCfg = LS.get('adoptionCfg', {adoptingPct:60, atRiskPct:35});
+function saveAdoptionCfg(){ LS.set('adoptionCfg',adoptionCfg); }
+function setAdoptionCfg(k,v){
+  adoptionCfg[k]=Math.max(0,Math.min(100,Math.round(+v)||0));
+  if(adoptionCfg.atRiskPct>adoptionCfg.adoptingPct) adoptionCfg.atRiskPct=adoptionCfg.adoptingPct;
+  saveAdoptionCfg(); route();
+}
+// Classify an account's adoption against the configurable cutoffs.
+function adoptionTier(a){
+  const u=a.usage; if(!u||u.adoptionPct==null) return 'none';
+  if(u.adoptionPct>=adoptionCfg.adoptingPct) return 'adopting';
+  if(u.adoptionPct<adoptionCfg.atRiskPct) return 'low';
+  return 'ramping';
+}
+const ADOPT_META={adopting:['p-green','Adopting'],ramping:['p-amber','Ramping'],low:['p-red','Not adopting'],none:['p-gray','No usage data']};
+function adoptionPill(a){
+  const t=adoptionTier(a); const [cls,lbl]=ADOPT_META[t];
+  if(t==='none') return `<span class="pill ${cls}">${lbl}</span>`;
+  return `<span class="pill ${cls}">${lbl} · ${a.usage.adoptionPct}%</span>`;
+}
+function adoptionColor(t){ return t==='adopting'?'var(--green)':t==='ramping'?'var(--amber)':t==='low'?'var(--red)':'var(--muted)'; }
+function usageTrendHtml(t){ if(t==null) return '<span class="mini">—</span>'; const up=t>0,flat=t===0; const c=up?'var(--green)':flat?'var(--muted)':'var(--red)'; return `<span style="color:${c};font-weight:700">${up?'▲ +':flat?'· ':'▼ '}${t}%</span>`; }
+function commissionPct(a){ const u=a.usage; if(!u||!u.commTarget) return null; return Math.round(u.commAttained/u.commTarget*100); }
+function commissionPill(a){ const p=commissionPct(a); if(p==null) return '<span class="pill p-gray">No target</span>'; const cls=p>=100?'p-green':p>=70?'p-amber':'p-red'; return `<span class="pill ${cls}">${p}% to goal</span>`; }
 
 // ---------- engagement cadence (segment-based outreach requirement) ----------
 // Required outreach cadence varies by book segment. An account "falls out of
@@ -242,7 +273,7 @@ async function load(){
       lastAct:(o.Account&&o.Account.LastActivityDate)||null,
       ltv:0, pastDeals:0, firstPurchase:null, lastPurchase:null,
       lifeCases:0, lifeHigh:0, lifeEsc:0, sentiment:null, sentTier:'none',
-      casesBlocked:0, casesAging:0, growth:{Renewal:0,Expansion:0,Transactional:0}
+      casesBlocked:0, casesAging:0, growth:{Renewal:0,Expansion:0,Transactional:0}, usage:null
     };}
     a.renewalAmount += o.Amount||0;
     a.opps.push({name:o.Name, amount:o.Amount, close:o.CloseDate, stage:o.StageName});
@@ -277,6 +308,12 @@ async function load(){
   // refresh is due at the 2.5-year midpoint of a 5-year hardware contract.
   const qTap = `SELECT AccountId, MIN(CloseDate) HwFirstPurchase__c FROM OpportunityLineItem
     WHERE AccountId IN (${idList(acctIds)}) AND Family__c IN ('Cart','FLEX 2','X26','BODYCAM3','FLEET','AIR','INTERVIEW') GROUP BY AccountId`;
+  // Usage / adoption. This data lives in the product-analytics Snowflake and is
+  // surfaced via Sigma today (per Beatrice's CSM finding) — not native Salesforce —
+  // so it's modeled here as a ProductUsage__c object fed by a periodic export.
+  const qUsage = `SELECT AccountId, SeatsLicensed__c, SeatsActive__c, AdoptionPct__c, UsageTrendPct__c,
+    CommissionTarget__c, CommissionAttained__c, LastUsageSync__c, (SELECT Family, Licensed, Active, Pct FROM Products)
+    FROM ProductUsage__c WHERE AccountId IN (${idList(acctIds)})`;
   async function fetchOrgChain(seedIds){
     const map={}; let frontier=[...new Set(seedIds)].filter(Boolean); let depth=0;
     while(frontier.length && depth<10){
@@ -288,8 +325,8 @@ async function load(){
     }
     return map;
   }
-  const [userMap, cases, dealAgg, sentAgg, blockedAgg, agingAgg, growthAgg, npsAgg, tapAgg] = await Promise.all([
-    fetchOrgChain([...ownerIds]), soql(q3), soql(qDeals), soql(qSent), soql(qBlocked), soql(qAging), soql(qGrowth), soql(qNps), soql(qTap)
+  const [userMap, cases, dealAgg, sentAgg, blockedAgg, agingAgg, growthAgg, npsAgg, tapAgg, usageAgg] = await Promise.all([
+    fetchOrgChain([...ownerIds]), soql(q3), soql(qDeals), soql(qSent), soql(qBlocked), soql(qAging), soql(qGrowth), soql(qNps), soql(qTap), soql(qUsage)
   ]);
 
   cases.forEach(c=>{
@@ -305,6 +342,14 @@ async function load(){
   growthAgg.forEach(r=>{ const a=acctMap[r.AccountId]; if(a && r.GrowthType) a.growth[r.GrowthType]=r.amt||0; });
   npsAgg.forEach(r=>{ const a=acctMap[r.AccountId]; if(a){ a.nps=r.NPS_Score__c; a.npsDate=r.SurveyDate__c; } });
   tapAgg.forEach(r=>{ const a=acctMap[r.AccountId]; if(a) a.tapHwStart=r.HwFirstPurchase__c||null; });
+  usageAgg.forEach(r=>{ const a=acctMap[r.AccountId]; if(!a) return;
+    const rawProds=(r.Products&&r.Products.records)||r.Products||[];
+    a.usage={
+      licensed:r.SeatsLicensed__c, active:r.SeatsActive__c, adoptionPct:r.AdoptionPct__c, trend:r.UsageTrendPct__c,
+      commTarget:r.CommissionTarget__c, commAttained:r.CommissionAttained__c, sync:r.LastUsageSync__c,
+      products:rawProds.map(p=>({family:p.family!=null?p.family:p.Family, licensed:p.licensed!=null?p.licensed:p.Licensed, active:p.active!=null?p.active:p.Active, pct:p.pct!=null?p.pct:p.Pct}))
+    };
+  });
   accounts.forEach(computeSentiment);
   accounts.forEach(computeTap);
 
@@ -491,9 +536,20 @@ function sevRank(s){return {Critical:4,High:3,Medium:2,Low:1}[s]||0;}
 function setEscStatus(acctId,status){
   const cur = ensureEscState(acctId);
   cur.status=status;
+  if(status==='In Progress' && !cur.openedAt) cur.openedAt=new Date().toISOString();
   cur.log.push({t:new Date().toISOString(), note:'Status → '+status});
-  LS.set('escState',escState); rebuildEsc();
+  LS.set('escState',escState);
+  try{ rebuildEsc(); }catch(e){ console.warn(e); }
   if(STATE.tab==='escalations') route();
+}
+function startEscalation(acctId){
+  setEscStatus(acctId,'In Progress');
+  toast('Escalation started — status is In Progress.');
+  openAcct(acctId);
+  setTimeout(()=>{
+    const el=document.getElementById('acctEscalation');
+    if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+  },80);
 }
 function addEscNote(acctId,note){ if(!note) return; const cur=ensureEscState(acctId); cur.log.push({t:new Date().toISOString(),note}); LS.set('escState',escState); }
 function setEscReason(acctId,val){ const cur=ensureEscState(acctId); cur.reasonCode=val||null; LS.set('escState',escState); rebuildEsc(); if(STATE.tab==='escalations') route(); }
@@ -531,7 +587,7 @@ function crumbPath(nodeId){
 }
 
 // ---------- shared cells ----------
-const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',renewals:'Renewals',tap:'TAP Refreshes',scorecard:'CSM Scorecard',ctas:'CTAs',escalations:'Escalations',casewatch:'Case Watch',engagement:'Engagement',plans:'Success Plans',journeys:'Journeys',worklist:'My Worklist',model:'Health Model',resources:'Resource Library'};
+const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',renewals:'Renewals',tap:'TAP Refreshes',scorecard:'CSM Scorecard',usage:'Usage & Adoption',ctas:'CTAs',escalations:'Escalations',casewatch:'Case Watch',engagement:'Engagement',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Health Model',resources:'Resource Library'};
 const HUES=['ty','tb','tv','tg','ta','tr'];
 function hueFor(s){ const str=String(s||''); let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return HUES[h%HUES.length]; }
 function stateTag(a){ const st=a.state||'—'; return `<span class="tag ${hueFor(st)}">${esc(st)}</span>`; }
@@ -585,12 +641,13 @@ function route(){
   else if(STATE.tab==='renewals') app.innerHTML=viewRenewals(accts);
   else if(STATE.tab==='tap') app.innerHTML=viewTap(accts);
   else if(STATE.tab==='scorecard') app.innerHTML=viewScorecard(accts);
+  else if(STATE.tab==='usage') app.innerHTML=viewUsage(accts);
   else if(STATE.tab==='ctas') app.innerHTML=viewCTAs(accts);
   else if(STATE.tab==='escalations') app.innerHTML=viewEsc(accts);
   else if(STATE.tab==='casewatch') app.innerHTML=viewCaseWatch(accts);
   else if(STATE.tab==='engagement') app.innerHTML=viewEngagement(accts);
   else if(STATE.tab==='plans') app.innerHTML=viewPlans(accts);
-  else if(STATE.tab==='journeys') app.innerHTML=viewJourneys(accts);
+  else if(STATE.tab==='emails') app.innerHTML=viewEmails(accts);
   else if(STATE.tab==='worklist') app.innerHTML=viewWork(accts);
   else if(STATE.tab==='model') app.innerHTML=viewModel(accts);
   else if(STATE.tab==='resources') app.innerHTML=viewResources();
@@ -600,9 +657,10 @@ function route(){
   const caseB=$('#caseBadge'); if(caseB) caseB.textContent = STATE.accounts.filter(a=>a.casesBlocked>0).length;
   const cadB=$('#cadenceBadge'); if(cadB) cadB.textContent = STATE.accounts.filter(a=>cadenceInfo(a).tier==='red').length;
   const tapB=$('#tapBadge'); if(tapB) tapB.textContent = STATE.accounts.filter(a=>a.tapStatus==='overdue').length;
+  const useB=$('#usageBadge'); if(useB) useB.textContent = STATE.accounts.filter(a=>adoptionTier(a)==='low').length;
   $('#foot').innerHTML = isHome
     ? `Axon Customer Success Command Center · an internal replacement for Gainsight.`
-    : `Scope: <b>${esc(STATE.nodeIndex[STATE.scope].name)}</b>${ownerFilter?` · filtered to CSM <b>${esc(ownerFilter)}</b>`:''} · ${accts.length} accounts with an active renewal · Health = live cases + renewal timing (tunable in Health Model). LTV & products from closed-won deals. Sentiment from lifetime support signals. CSAT, CTAs, journeys & success plans persist in your browser.`;
+    : `Scope: <b>${esc(STATE.nodeIndex[STATE.scope].name)}</b>${ownerFilter?` · filtered to CSM <b>${esc(ownerFilter)}</b>`:''} · ${accts.length} accounts with an active renewal · Health = live cases + renewal timing (tunable in Health Model). LTV & products from closed-won deals. Sentiment from lifetime support signals. CSAT, CTAs & success plans persist in your browser.`;
 }
 
 // ---- Home ----
@@ -640,7 +698,7 @@ function viewHome(){
     ['Case Watch','casewatch','Blocked and aging support cases — the two case signals worth escalating before they turn into an executive email.'],
     ['Engagement','engagement','Outreach cadence by book segment — see who is falling out of cadence before they go quiet.'],
     ['Success Plans','plans','Auto-generate onboarding + risk-aware plans for new logos, or build a custom plan for any account.'],
-    ['Journeys','journeys','Lifecycle outreach journeys (welcome, renewal, save play, adoption) with live membership and progress tracking.'],
+    ['Email Outreach','emails','Filled customer and internal email templates — review, edit, then send yourself from Outlook/Gmail.'],
     ['My Worklist','worklist','A prioritized action list ranked by urgency and revenue.'],
     ['Health Model','model','Tune the health-score weights and the entire book re-scores instantly — no engineering ticket.'],
     ['Resource Library','resources','Guides, SOPs and internal resources CSMs actually need — editable in real time so links never go stale.'],
@@ -1351,6 +1409,50 @@ function viewCaseWatch(accts){
   ${sorted.length?'':'<p class="mini">Clear queue — no blocked or aging cases in this scope.</p>'}</div>`;
 }
 
+// ---- Usage & Adoption ----
+// Beatrice (CSM): usage/adoption is the biggest gap in Gainsight — it lives in a
+// separate Snowflake/Sigma world today. This tab brings it in one place, with the
+// "adopting vs. not" cutoff and each account's progress toward its commission goal.
+let usageKpiFilter=null; // null | 'adopting' | 'ramping' | 'low'
+function setUsageKpi(k){ usageKpiFilter = usageKpiFilter===k?null:k; route(); }
+function viewUsage(accts){
+  const withU=accts.filter(a=>a.usage && a.usage.adoptionPct!=null);
+  const noData=accts.length-withU.length;
+  const adopting=withU.filter(a=>adoptionTier(a)==='adopting').length;
+  const ramping=withU.filter(a=>adoptionTier(a)==='ramping').length;
+  const low=withU.filter(a=>adoptionTier(a)==='low').length;
+  const avgAdopt=withU.length?Math.round(withU.reduce((s,a)=>s+a.usage.adoptionPct,0)/withU.length):null;
+  const commRows=withU.filter(a=>a.usage.commTarget);
+  const targSum=commRows.reduce((s,a)=>s+a.usage.commTarget,0);
+  const attSum=commRows.reduce((s,a)=>s+a.usage.commAttained,0);
+  const commAttain=targSum?Math.round(attSum/targSum*100):null;
+  let sorted=[...withU].sort((x,y)=>(x.usage.adoptionPct-y.usage.adoptionPct));
+  if(usageKpiFilter) sorted=sorted.filter(a=>adoptionTier(a)===usageKpiFilter);
+  const kpis=[
+    ['Adopting',adopting,`≥ ${adoptionCfg.adoptingPct}% active`,'adopting'],
+    ['Ramping',ramping,`${adoptionCfg.atRiskPct}–${adoptionCfg.adoptingPct}% active`,'ramping'],
+    ['Not adopting',low,`< ${adoptionCfg.atRiskPct}% active — intervene`,'low'],
+    ['Avg adoption',avgAdopt==null?'—':avgAdopt+'%',withU.length+' accounts with usage',null],
+    ['Commission attainment',commAttain==null?'—':commAttain+'%',fmtMoney(attSum)+' of '+fmtMoney(targSum),null],
+  ];
+  return `<div class="card"><h3>Usage &amp; Adoption <span class="hint">product-analytics usage (Snowflake / Sigma), per CSM stakeholder guidance — click a tile to filter</span></h3>
+  <p class="mini" style="line-height:1.7">The biggest gap CSMs called out: usage &amp; adoption data lives outside Gainsight (product-analytics Snowflake, surfaced via Sigma). This brings it in one place — active vs. licensed seats, adoption trend, and each account's progress toward its commission goal. What counts as <b>adopting vs. not</b> is a business rule, so it's editable below.</p>
+  <div class="row-actions" style="margin:12px 0 4px;flex-wrap:wrap;gap:14px">
+    <label class="mini">"Adopting" at/above %<br><input type="number" min="0" max="100" value="${adoptionCfg.adoptingPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('adoptingPct',this.value)"></label>
+    <label class="mini">"Not adopting" below %<br><input type="number" min="0" max="100" value="${adoptionCfg.atRiskPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('atRiskPct',this.value)"></label>
+    ${noData?`<span class="mini" style="align-self:flex-end;color:var(--muted)">${noData} account${noData===1?'':'s'} not yet in the usage export</span>`:''}
+  </div>
+  <div class="kpis" style="margin:14px 0 0">${kpis.map(k=>`<div class="kpi${k[3]?' clickable':''}${/Not adopting/.test(k[0])?' accent':''}${usageKpiFilter===k[3]&&k[3]?' selected':''}"${k[3]?` onclick="setUsageKpi('${k[3]}')"`:''}><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div></div>
+  <div class="card"><h3>Accounts by adoption <span class="hint">lowest adoption first${usageKpiFilter?' · filtered — click the tile again to clear':''}</span></h3>
+  <div class="searchbar"><input id="usearch" placeholder="Filter accounts…" oninput="filterTable(this,'utbl')"></div>
+  <table id="utbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th class="num">Adoption</th><th class="num">Active / Licensed</th><th class="num">Trend</th><th class="num">To goal</th><th class="num">Synced</th></tr></thead><tbody>
+  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b></td><td>${esc(a.ownerName)}</td><td>${segmentPill(a)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
+  </tbody></table>
+  ${sorted.length?'':'<p class="mini">No accounts with usage data match this filter.</p>'}
+  <p class="mini" style="margin-top:12px;color:var(--muted)">Source: product-analytics Snowflake → Sigma, modeled as a periodic export. Swap in the live connection later — nothing above needs to change since it reads the same <code>ProductUsage__c</code> shape.</p>
+  </div>`;
+}
+
 // ---- TAP Refreshes (hardware warranty refresh cycle) ----
 // Per Leana's stakeholder finding: TAP status belongs on the portfolio home
 // dashboard, refresh due at the 2.5-year midpoint of a 5-year hardware
@@ -1549,6 +1651,42 @@ async function loadAcctIntel(id){
   }catch(e){ if(dBox)dBox.innerHTML='<div class="err">Couldn\u2019t load purchase history — '+esc(e.message||e)+'</div>'; if(pBox)pBox.innerHTML=''; }
 }
 
+// ---- Usage & adoption card (Account 360) ----
+// Beatrice (CSM): the biggest gap in Gainsight is usage/adoption living in a
+// separate Snowflake/Sigma world. This brings it onto the account in one place:
+// active vs. licensed seats, adoption % against the configurable cutoff, usage
+// trend, per-product breakdown, and progress to the CSM's commission goal.
+function usageCard(a){
+  const u=a.usage;
+  if(!u || u.adoptionPct==null){
+    return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Usage &amp; adoption <span class="hint">from product analytics (Snowflake / Sigma)</span></h3>
+      <p class="mini">No usage export has been synced for this account yet. Adoption, APAP and per-product usage live in the product-analytics Snowflake and are pulled in on a periodic export — this account wasn't in the latest pull.</p></div>`;
+  }
+  const tier=adoptionTier(a), col=adoptionColor(tier);
+  const cp=commissionPct(a);
+  const prods=(u.products||[]).slice().sort((x,y)=>(y.pct||0)-(x.pct||0));
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Usage &amp; adoption <span class="hint">${adoptionPill(a)}${u.sync?` · synced ${esc(u.sync)}`:''}</span></h3>
+    <p class="mini">Active users vs. what's provisioned, from the product-analytics export. "Adopting" is defined as ≥ <b>${adoptionCfg.adoptingPct}%</b> active (editable in the <a href="#" onclick="closeSheet();setTab('usage');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">Usage &amp; Adoption</a> tab).</p>
+    <div class="kpis" style="margin:12px 0">
+      <div class="kpi"><div class="l">Adoption</div><div class="v" style="color:${col}">${u.adoptionPct}%</div><div class="d">${ADOPT_META[tier][1]}</div></div>
+      <div class="kpi"><div class="l">Active seats</div><div class="v">${(u.active||0).toLocaleString()}</div><div class="d">of ${(u.licensed||0).toLocaleString()} licensed</div></div>
+      <div class="kpi"><div class="l">Usage trend</div><div class="v" style="font-size:22px">${usageTrendHtml(u.trend)}</div><div class="d">vs. prior period</div></div>
+      <div class="kpi"><div class="l">Last synced</div><div class="v" style="font-size:20px">${u.sync?esc(fmtDate(u.sync)):'—'}</div><div class="d">periodic export</div></div>
+    </div>
+    <div class="progress" title="${u.adoptionPct}% adoption"><i style="width:${Math.min(100,u.adoptionPct)}%;background:${col}"></i></div>
+    ${cp!=null?`<div style="margin-top:16px">
+      <div class="row-actions" style="justify-content:space-between;margin-bottom:6px"><span class="mini" style="font-weight:700;color:var(--ink)">Tracking toward commission goal</span> ${commissionPill(a)}</div>
+      <div class="progress"><i style="width:${Math.min(100,cp)}%;background:${cp>=100?'var(--green)':cp>=70?'var(--amber)':'var(--red)'}"></i></div>
+      <p class="mini" style="margin-top:6px">${fmtFull(u.commAttained)} attained of ${fmtFull(u.commTarget)} target${cp>=100?' — goal met':''}.</p>
+    </div>`:''}
+    ${prods.length?`<p class="mini" style="font-weight:700;color:var(--ink);margin:16px 0 6px">By product</p>
+    <table><thead><tr><th>Product</th><th class="num">Active</th><th class="num">Licensed</th><th class="num">Adoption</th></tr></thead><tbody>
+    ${prods.map(p=>{const pc=p.pct==null?null:(p.pct>=adoptionCfg.adoptingPct?'p-green':p.pct<adoptionCfg.atRiskPct?'p-red':'p-amber');return `<tr style="cursor:default"><td><b>${esc(prodName(p.family))}</b></td><td class="num">${(p.active||0).toLocaleString()}</td><td class="num">${(p.licensed||0).toLocaleString()}</td><td class="num">${p.pct==null?'—':`<span class="pill ${pc}">${p.pct}%</span>`}</td></tr>`;}).join('')}
+    </tbody></table>`:''}
+    <p class="mini" style="margin-top:10px;color:var(--muted)">Source: product-analytics Snowflake → Sigma. Modeled here as a periodic export; wire the live feed in later without touching this view.</p>
+  </div>`;
+}
+
 // ---- Account 360 ----
 function openAcct(id){
   const a=STATE.accounts.find(x=>x.id===id); if(!a) return;
@@ -1565,10 +1703,11 @@ function openAcct(id){
   sheet.innerHTML=`<div class="hd"><div><h2>${esc(a.name)}</h2><div class="mini">${esc(a.state||'')} · Owner ${esc(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
   <div class="bd">
     <div class="row-actions" style="margin-bottom:14px">
-      <button class="btn primary" onclick="createOrOpenPlan('${a.id}')">${hasPlan?'Open success plan':'Create success plan'}</button>
-      <button class="btn" onclick="document.getElementById('actSubject')&&document.getElementById('actSubject').focus()">Log activity</button>
-      <button class="btn" onclick="quickCta('${a.id}')">+ Add CTA</button>
-      ${a.tier!=='healthy'?`<button class="btn" onclick="setEscStatus('${a.id}','In Progress');openAcct('${a.id}')">Start escalation</button>`:''}
+      <button type="button" class="btn primary" onclick="createOrOpenPlan('${a.id}')">${hasPlan?'Open success plan':'Create success plan'}</button>
+      <button type="button" class="btn" onclick="event.stopPropagation();composeEmailForAcct('${a.id}')">Draft email</button>
+      <button type="button" class="btn" onclick="document.getElementById('actSubject')&&document.getElementById('actSubject').focus()">Log activity</button>
+      <button type="button" class="btn" onclick="quickCta('${a.id}')">+ Add CTA</button>
+      ${a.tier!=='healthy'?`<button type="button" class="btn" onclick="event.stopPropagation();startEscalation('${a.id}')">Start escalation</button>`:''}
     </div>
     <div class="kpis" style="margin-bottom:16px">
       <div class="kpi"><div class="l">Health</div><div class="v" style="color:${a.health>=75?'var(--green)':a.health>=50?'var(--amber)':'var(--red)'}">${a.health}</div><div class="d">${tierPill(a.tier)}</div></div>
@@ -1580,7 +1719,10 @@ function openAcct(id){
       <div class="kpi"><div class="l">Open cases</div><div class="v">${a.openCases}</div><div class="d">${a.highCases} high/urgent</div></div>
       <div class="kpi${(a.casesBlocked||a.casesAging)?' accent':''}"><div class="l">Blocked / Aging</div><div class="v">${a.casesBlocked||0} / ${a.casesAging||0}</div><div class="d">cases to escalate</div></div>
       <div class="kpi"><div class="l">Growth (all-time)</div><div class="v">${fmtMoney((a.growth&&(a.growth.Renewal+a.growth.Expansion+a.growth.Transactional))||0)}</div><div class="d">Renewal/Expansion/Transactional</div></div>
+      <div class="kpi"><div class="l">Adoption</div><div class="v" style="color:${adoptionColor(adoptionTier(a))}">${a.usage&&a.usage.adoptionPct!=null?a.usage.adoptionPct+'%':'—'}</div><div class="d">${a.usage&&a.usage.adoptionPct!=null?ADOPT_META[adoptionTier(a)][1]:'no usage data'}</div></div>
     </div>
+
+    ${usageCard(a)}
 
     ${teamRosterCard(a)}
 
@@ -1644,8 +1786,8 @@ function openAcct(id){
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Health breakdown <span class="hint">why this number</span></h3><div class="comp"><div><b>Base</b></div><div class="pos">100</div>${compRows}<div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>Score</b></div><div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>${a.health}</b></div></div></div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Open renewals</h3><table><tbody>${opps.map(o=>`<tr style="cursor:default"><td>${esc(o.name)}</td><td>${esc(o.stage)}</td><td class="num">${fmtMoney(o.amount)}</td><td class="num">${esc(o.close)}</td></tr>`).join('')}</tbody></table></div>
     ${activityCard(a)}
-    <div class="card" style="box-shadow:none;margin:0"><h3>Escalation <span class="hint">${escDaysOpen!=null?escDaysOpen+'d open':''}${escDaysOpen>=14?' · stale':''}</span></h3>
-      <div class="row-actions" style="margin-bottom:10px">Status: ${statusPill(escStateForAcct.status||'—')} ${a.tier!=='healthy'?`<button class="btn" onclick="setEscStatus('${a.id}','In Progress');openAcct('${a.id}')">Start</button><button class="btn primary" onclick="setEscStatus('${a.id}','Resolved');openAcct('${a.id}')">Resolve</button>`:''}</div>
+    <div class="card" id="acctEscalation" style="box-shadow:none;margin:0"><h3>Escalation <span class="hint">${escDaysOpen!=null?escDaysOpen+'d open':''}${escDaysOpen>=14?' · stale':''}</span></h3>
+      <div class="row-actions" style="margin-bottom:10px">Status: ${statusPill(escStateForAcct.status||'—')} ${a.tier!=='healthy'?`<button type="button" class="btn" onclick="event.stopPropagation();startEscalation('${a.id}')">${escStateForAcct.status==='In Progress'?'Started':'Start'}</button><button type="button" class="btn primary" onclick="event.stopPropagation();setEscStatus('${a.id}','Resolved');toast('Escalation resolved.');openAcct('${a.id}')">Resolve</button>`:''}</div>
       <div class="row-actions" style="margin-bottom:12px">
         <label class="mini">Reason code</label>
         <select class="select sm" onchange="setEscReason('${a.id}',this.value);openAcct('${a.id}')">
@@ -1671,9 +1813,13 @@ function openAcct(id){
   loadAcctComms(a.id);
   loadAcctIntel(a.id);
 }
-function showOverlay(){ $('#overlay').classList.add('show'); $('#sheet').parentElement.scrollTop=0; }
-function closeSheet(){ $('#overlay').classList.remove('show'); }
-$('#overlay').addEventListener('click',e=>{ if(e.target.id==='overlay') closeSheet(); });
+function showOverlay(){ const o=$('#overlay'); if(o) o.classList.add('show'); const s=$('#sheet'); if(s&&s.parentElement) s.parentElement.scrollTop=0; }
+function closeSheet(){ const o=$('#overlay'); if(o) o.classList.remove('show'); }
+(function bindOverlayClose(){
+  const o=$('#overlay');
+  if(!o) return;
+  o.addEventListener('click',e=>{ if(e.target.id==='overlay') closeSheet(); });
+})();
 
 // ---- View-as-CSM auto-filter (Gainsight: dashboards auto-filter to the user) ----
 function setOwnerFilter(v){ ownerFilter=v; route(); }
@@ -1765,31 +1911,498 @@ function ctaAction(id,status){ const c=ctas.find(x=>x.id===id); if(c){ c.status=
 function delCta(id){ ctas=ctas.filter(x=>x.id!==id); saveCtas(); route(); }
 function quickCta(id){ const t=prompt('New action item (CTA) for this account:'); if(!t) return; const a=STATE.accounts.find(x=>x.id===id); ctas.push({id:cid(),type:'CS Request',acctId:id,name:a?a.name:'',priority:'Medium',due:sfDate(new Date(Date.now()+14*864e5)),title:t.trim(),status:'Open',source:'Manual',createdAt:new Date().toISOString()}); saveCtas(); toast('CTA added — see the CTAs tab.'); }
 
-// ---- Journeys / Journey Orchestrator (Gainsight: Email Outreach) ----
-const JOURNEYS=[
-  {id:'welcome',name:'New Logo Welcome Series',desc:'Automated onboarding outreach to new-logo POCs.',steps:['Day 0 — Welcome & CSM introduction','Day 3 — Onboarding kickoff scheduling','Day 14 — Getting-started resources','Day 30 — First value check-in'],match:a=>newLogo(a)},
-  {id:'renewal90',name:'Renewal 90-Day Outreach',desc:'Proactive renewal outreach as the date approaches.',steps:['T-90 — Value recap & renewal heads-up','T-60 — Renewal proposal review','T-30 — Confirm paperwork & stakeholders'],match:a=>a.dclose<=90},
-  {id:'save',name:'At-Risk Save Play',desc:'Targeted retention outreach for at-risk accounts.',steps:['Executive check-in','Risk & escalation review','Success-plan reset'],match:a=>a.tier==='atrisk'},
-  {id:'adopt',name:'Product Adoption Nudge',desc:'Nudge stale accounts toward deeper product adoption.',steps:['Share usage insights','Feature spotlight','Offer a training session'],match:a=>a.dsAct!=null && a.dsAct>120}
+// ---- Email Outreach (compose → review → send yourself) ----
+// Suggests filled templates for customer + internal situations. The app never
+// sends mail itself — CSMs edit the draft, confirm they've reviewed it, then
+// copy or open in their mail client to send manually.
+let emailDrafts = LS.get('emailDrafts',[]); // history of reviewed/copied drafts
+function saveEmailDrafts(){ LS.set('emailDrafts',emailDrafts); }
+let emailCompose = null; // {templateId,acctId,audience,to,cc,subject,body,confirmed}
+let emailAudienceFilter = 'all'; // all | customer | internal
+let emailTplMenuOpen = false;
+function toggleEmailTplMenu(force){
+  emailTplMenuOpen = force==null ? !emailTplMenuOpen : !!force;
+  const menu=$('#emailTplMenu'), btn=$('#emailTplBtn');
+  if(menu) menu.hidden=!emailTplMenuOpen;
+  if(btn){ btn.setAttribute('aria-expanded', emailTplMenuOpen?'true':'false'); btn.classList.toggle('open', emailTplMenuOpen); }
+}
+
+const EMAIL_TEMPLATES=[
+  {id:'cust_welcome',audience:'customer',name:'New logo welcome',desc:'Introduce yourself and kick off onboarding.',
+    suggest:a=>newLogo(a),
+    fill:ctx=>emailFillCustomer(ctx,'Welcome to Axon — next steps for '+ctx.accountName,
+`Hi ${ctx.greetingName},
+
+I'm ${ctx.csmName}, your Customer Success Manager at Axon. Welcome — we're glad ${ctx.accountName} is on board.
+
+I'd like to schedule a short kickoff to:
+• Confirm your goals for the first 90 days
+• Introduce the Axon team supporting you
+• Align on training, go-live, and how we'll measure success
+
+Are you available for 30 minutes next week? Happy to work around your calendar.
+
+Protect Life,
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_renewal',audience:'customer',name:'Renewal heads-up',desc:'Value recap as renewal approaches.',
+    suggest:a=>a.dclose<=120&&a.dclose>0,
+    fill:ctx=>emailFillCustomer(ctx,`${ctx.accountName} renewal — let's align ahead of ${ctx.renewalLabel}`,
+`Hi ${ctx.greetingName},
+
+I wanted to reach out ahead of your renewal (${ctx.renewalLabel}${ctx.renewalArr?`, ~${ctx.renewalArr} ARR`:''}).
+
+Before paperwork starts, I'd like to schedule a value recap to:
+• Review outcomes and adoption since last term
+• Confirm priorities for the next period
+• Surface any blockers early so we can clear them together
+
+Would ${ctx.suggestWindow} work for a 30-minute working session?
+
+Thanks,
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_tap',audience:'customer',name:'TAP refresh',desc:'Hardware warranty refresh outreach.',
+    suggest:a=>a.tapStatus==='overdue'||a.tapStatus==='duesoon',
+    fill:ctx=>emailFillCustomer(ctx,`TAP / hardware refresh for ${ctx.accountName}`,
+`Hi ${ctx.greetingName},
+
+I'm checking in on your TAP / hardware refresh for ${ctx.accountName}${ctx.tapLabel?` (${ctx.tapLabel})`:''}.
+
+Refreshing on schedule protects warranty coverage and keeps devices in a supported state. I can walk through:
+• What's due and recommended next steps
+• Timing that minimizes operational impact
+• Any RMAs or logistics we should line up now
+
+Can we book 20 minutes this week to lock a plan?
+
+Best,
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_save',audience:'customer',name:'Save play / risk check-in',desc:'Executive check-in when health or cases look strained.',
+    suggest:a=>a.tier==='atrisk'||(a.casesBlocked||0)>0||(a.highCases||0)>0,
+    fill:ctx=>emailFillCustomer(ctx,`Checking in — ${ctx.accountName}`,
+`Hi ${ctx.greetingName},
+
+I wanted to schedule a focused check-in on ${ctx.accountName}. A few signals suggest we should align sooner rather than later${ctx.riskBits?`: ${ctx.riskBits}`:'.'}.
+
+My goals for the conversation:
+• Understand what's getting in the way
+• Align on owners and dates for the next actions
+• Make sure the right Axon people are engaged
+
+Would you be open to 30 minutes in the next few days?
+
+Respectfully,
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_nps',audience:'customer',name:'NPS follow-up',desc:'Thank promoters or save detractors.',
+    suggest:a=>a.nps!=null&&(a.nps<=6||a.nps>=9),
+    fill:ctx=>{
+      const det=ctx.nps!=null&&ctx.nps<=6;
+      return emailFillCustomer(ctx, det?`Following up on your feedback — ${ctx.accountName}`:`Thank you for the feedback — ${ctx.accountName}`,
+det?`Hi ${ctx.greetingName},
+
+Thank you for taking the time on our recent survey (you scored us ${ctx.nps}/10). I take that feedback seriously and would like to understand what would make the partnership stronger.
+
+Could we schedule a short call so I can listen, document the gaps, and come back with a concrete plan?
+
+Appreciate you,
+${ctx.csmName}${ctx.csmTitle}`
+:`Hi ${ctx.greetingName},
+
+Thank you for the ${ctx.nps}/10 on our recent survey — that means a lot to the team supporting ${ctx.accountName}.
+
+If there's anyone else on your side who should hear about what's working (or a use case we should double down on), I'm happy to set that up.
+
+Protect Life,
+${ctx.csmName}${ctx.csmTitle}`);
+    }},
+  {id:'cust_product',audience:'customer',name:'Product / adoption update',desc:'Share a useful update or training nudge.',
+    suggest:a=>a.dsAct!=null&&a.dsAct>90,
+    fill:ctx=>emailFillCustomer(ctx,`Quick update for ${ctx.accountName}`,
+`Hi ${ctx.greetingName},
+
+Sharing a short update that may help ${ctx.accountName} get more value from the platform:
+
+• [Insert product / feature / training highlight]
+• Why it matters for teams like yours
+• How we can help you roll it out (demo, office hours, or Academy path)
+
+If useful, I can also pull a light usage snapshot and suggest 1–2 next steps.
+
+Open to a brief sync?
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_followup',audience:'customer',name:'Meeting follow-up',desc:'Recap + next steps after a call.',
+    suggest:()=>false,
+    fill:ctx=>emailFillCustomer(ctx,`Follow-up — ${ctx.accountName}`,
+`Hi ${ctx.greetingName},
+
+Thanks for the time today. Quick recap and next steps:
+
+Discussion highlights
+• [Point 1]
+• [Point 2]
+
+Next steps
+• ${ctx.csmName}: [action] — due [date]
+• ${ctx.greetingName}: [action] — due [date]
+
+I'll keep this on our success plan / next-step tracker as well. Ping me if I missed anything.
+
+Thanks,
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'int_handoff',audience:'internal',name:'Internal handoff / intro',desc:'Brief a TAM, AE, or peer on the account.',
+    suggest:()=>false,
+    fill:ctx=>emailFillInternal(ctx,`Handoff / context — ${ctx.accountName}`,
+`Hi ${ctx.internalGreeting},
+
+Sharing context on ${ctx.accountName} (CSM: ${ctx.csmName}).
+
+Snapshot
+• Renewal: ${ctx.renewalLabel}${ctx.renewalArr?` · ${ctx.renewalArr}`:''}
+• Health: ${ctx.health}${ctx.nps!=null?` · NPS ${ctx.nps}/10`:''}
+• Segment: ${ctx.segment}
+
+What you need to know
+• [Relationship / politics / blockers]
+• [Open commitments]
+• [Ask of you]
+
+Happy to jump on a quick sync if useful.
+
+Thanks,
+${ctx.csmName}`)},
+  {id:'int_escalation',audience:'internal',name:'Leadership escalation note',desc:'Internal alert when an account needs eyes.',
+    suggest:a=>a.tier==='atrisk'||(a.casesBlocked||0)>0,
+    fill:ctx=>emailFillInternal(ctx,`Escalation watch — ${ctx.accountName}`,
+`Hi ${ctx.internalGreeting},
+
+Flagging ${ctx.accountName} for awareness.
+
+Why now
+${ctx.riskBits?`• ${ctx.riskBits}`:'• Elevated risk signals on the book'}
+• Renewal: ${ctx.renewalLabel}${ctx.renewalArr?` · ${ctx.renewalArr} ARR`:''}
+• Health: ${ctx.health}
+
+What I'm doing
+• [Customer outreach / save play]
+• [Support / product partners engaged]
+• [Ask of leadership, if any]
+
+I'll update after the next touch.
+
+${ctx.csmName}`)},
+  {id:'int_tap',audience:'internal',name:'TAP coordination (internal)',desc:'Align ops / fleet / TAM on a refresh.',
+    suggest:a=>a.tapStatus==='overdue'||a.tapStatus==='duesoon',
+    fill:ctx=>emailFillInternal(ctx,`TAP coordination — ${ctx.accountName}`,
+`Hi ${ctx.internalGreeting},
+
+Need help coordinating the TAP / hardware refresh for ${ctx.accountName}${ctx.tapLabel?` (${ctx.tapLabel})`:''}.
+
+Ask
+• Confirm logistics / owners
+• Flag any known constraints from the field
+• Align on customer-facing timing before I commit a date
+
+Account CSM: ${ctx.csmName}
+
+Thanks,
+${ctx.csmName}`)},
+  {id:'int_renewal',audience:'internal',name:'Renewal risk to manager',desc:'Internal heads-up on a soft renewal.',
+    suggest:a=>a.dclose<=90&&a.readiness<70,
+    fill:ctx=>emailFillInternal(ctx,`Renewal risk — ${ctx.accountName} (${ctx.renewalLabel})`,
+`Hi ${ctx.internalGreeting},
+
+Heads-up on ${ctx.accountName}: renewal is ${ctx.renewalLabel}${ctx.renewalArr?` (~${ctx.renewalArr})`:''} and readiness is currently soft (${ctx.readiness}% checklist).
+
+Plan
+• Customer value recap scheduled / to schedule
+• Open risks: ${ctx.riskBits||'see Account 360'}
+• Help needed: [coverage, exec sponsor, discounting guardrails, etc.]
+
+I'll notify you if the forecast changes.
+
+${ctx.csmName}`)},
+  {id:'int_coaching',audience:'internal',name:'CSM coaching update',desc:'Manager ↔ rep note on scorecard / book health.',
+    suggest:()=>false,
+    fill:ctx=>emailFillInternal(ctx,`Coaching note — book update`,
+`Hi ${ctx.internalGreeting},
+
+Quick coaching / book update:
+
+Wins
+• [What went well]
+
+Focus areas
+• [Engagement / insights / growth / overdue work]
+
+This week's commitments
+• [1–3 concrete actions]
+
+Account example (if useful): ${ctx.accountName||'—'}
+
+${ctx.csmName}`)},
 ];
-function jStatus(jid,acctId){ return (journeyState[jid]&&journeyState[jid][acctId])||'Not started'; }
-function setJourneyStatus(jid,acctId,s){ journeyState[jid]=journeyState[jid]||{}; journeyState[jid][acctId]=s; saveJourneys(); }
-function toggleJourney(jid){ journeyOpen = journeyOpen===jid?'':jid; LS.set('journeyOpen',journeyOpen); route(); }
-function viewJourneys(accts){
-  let html=`<div class="card"><h3>Journey Orchestrator <span class="hint">automated CS/product outreach · membership auto-derived from live signals</span></h3>
-  <p class="mini">Define the outreach a customer should get at each lifecycle moment. Membership is computed live from account signals; track each account's progress below. <b>Emails send from your outreach tool</b> (Hubspot / Clari / Sales Outreach) — this orchestrates and tracks them.</p></div>`;
-  JOURNEYS.forEach(j=>{
-    const members=accts.filter(j.match);
-    const done=members.filter(m=>jStatus(j.id,m.id)==='Done').length, prog=members.filter(m=>jStatus(j.id,m.id)==='In progress').length;
-    const isOpen=journeyOpen===j.id;
-    html+=`<div class="card" style="margin:0 0 12px"><h3 style="cursor:pointer;border:none;margin:0 0 4px" onclick="toggleJourney('${j.id}')">${esc(j.name)} <span class="hint">${members.length} accounts · ${done} done · ${prog} in progress · ${isOpen?'▲ hide':'▼ show'}</span></h3>
-    <p class="mini" style="margin:2px 0 10px">${esc(j.desc)}</p>
-    <div class="row-actions" style="margin-bottom:10px">${j.steps.map((s,i)=>`<span class="pill p-gray" style="text-transform:none;font-weight:600">${i+1}. ${esc(s)}</span>`).join(' ')}</div>
-    ${isOpen?`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th>Status</th></tr></thead><tbody>
-      ${members.length?[...members].sort((a,b)=>b.renewalAmount-a.renewalAmount).map(m=>`<tr><td onclick="openAcct('${m.id}')" style="cursor:pointer"><b>${esc(m.name)}</b></td><td>${esc(m.ownerName)}</td><td class="num">${fmtMoney(m.renewalAmount)}</td><td><select class="select" onchange="setJourneyStatus('${j.id}','${m.id}',this.value)"><option${jStatus(j.id,m.id)==='Not started'?' selected':''}>Not started</option><option${jStatus(j.id,m.id)==='In progress'?' selected':''}>In progress</option><option${jStatus(j.id,m.id)==='Done'?' selected':''}>Done</option></select></td></tr>`).join(''):'<tr><td colspan="4" class="mini">No accounts match this journey in the current scope.</td></tr>'}
-    </tbody></table>`:''}
-    </div>`;
+
+function emailFillCustomer(ctx,subject,body){
+  const to=ctx.customerEmails.join(', ');
+  return {to,cc:ctx.axonEmails.filter(e=>e!==to).slice(0,2).join(', '),subject,body};
+}
+function emailFillInternal(ctx,subject,body){
+  // Prefer Axon roster emails; leave blank for the CSM to fill if none documented yet
+  const to=ctx.axonEmails.join(', ')||ctx.ownerEmail||'';
+  const cc=(ctx.csmEmail && ctx.axonEmails.indexOf(ctx.csmEmail)<0)?ctx.csmEmail:'';
+  return {to,cc,subject,body};
+}
+
+function emailCtx(a){
+  const t=a?teamFor(a.id):{axon:[],customer:[]};
+  const cust=t.customer||[], axon=t.axon||[];
+  const primary=cust[0];
+  const greetingName=primary?primary.name.split(/\s+/)[0]:'there';
+  const customerEmails=cust.map(m=>m.email).filter(Boolean);
+  const axonEmails=axon.map(m=>m.email).filter(Boolean);
+  const csmName=(a&&a.ownerName)||'Your CSM';
+  const csmTitle=a&&a.ownerTitle?`, ${a.ownerTitle}`:'';
+  const renewalLabel=a?(a.dclose>9000?'date TBD':(a.dclose<=0?'overdue':`in ${a.dclose} days`)):'—';
+  const riskBits=[];
+  if(a){
+    if(a.tier==='atrisk') riskBits.push('account is at-risk on health');
+    if(a.highCases) riskBits.push(`${a.highCases} high/urgent case(s)`);
+    if(a.casesBlocked) riskBits.push(`${a.casesBlocked} blocked case(s)`);
+    if(a.nps!=null&&a.nps<=6) riskBits.push(`NPS ${a.nps}/10`);
+    if(a.dsAct!=null&&a.dsAct>90) riskBits.push(`${a.dsAct}d since last touch`);
+  }
+  const tapLabel=a&&a.tapStatus==='overdue'?'overdue':a&&a.tapStatus==='duesoon'?'due within 90 days':'';
+  return {
+    accountName:a?a.name:'[Account]',
+    csmName, csmTitle, csmEmail:'',
+    ownerEmail:'',
+    greetingName,
+    internalGreeting:axon[0]?axon[0].name.split(/\s+/)[0]:'team',
+    customerEmails, axonEmails,
+    renewalLabel,
+    renewalArr:a&&a.renewalAmount?fmtMoney(a.renewalAmount):'',
+    health:a?a.health:'—',
+    nps:a?a.nps:null,
+    readiness:a&&a.readiness!=null?a.readiness:a?readinessScore(a):null,
+    segment:a?(a.segment||a.bookSegment||'—'):'—',
+    riskBits:riskBits.join('; '),
+    tapLabel,
+    suggestWindow:'early next week',
+  };
+}
+
+function buildEmailDraft(templateId,acctId){
+  const tpl=EMAIL_TEMPLATES.find(t=>t.id===templateId); if(!tpl) return null;
+  const a=acctId?STATE.accounts.find(x=>x.id===acctId):null;
+  if(a) a.readiness=readinessScore(a);
+  const filled=tpl.fill(emailCtx(a));
+  return {
+    templateId:tpl.id, audience:tpl.audience, acctId:acctId||'',
+    to:filled.to||'', cc:filled.cc||'', subject:filled.subject||'', body:filled.body||'',
+    confirmed:false
+  };
+}
+
+function startEmailCompose(templateId,acctId){
+  emailCompose=buildEmailDraft(templateId,acctId);
+  if(!emailCompose){ toast('Template not found.'); return; }
+  setTab('emails');
+  // route() called by setTab; scroll to composer after paint
+  setTimeout(()=>{ const el=document.getElementById('emailComposer'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); },60);
+}
+function composeEmailForAcct(acctId){
+  try{
+    const a=STATE.accounts.find(x=>x.id===acctId);
+    if(!a){ toast('Account not found.'); return; }
+    const suggested=EMAIL_TEMPLATES.find(t=>t.audience==='customer'&&typeof t.suggest==='function'&&t.suggest(a))
+      || EMAIL_TEMPLATES.find(t=>t.id==='cust_followup');
+    if(!suggested){ toast('No email template available.'); return; }
+    closeSheet();
+    startEmailCompose(suggested.id,acctId);
+    toast('Draft ready — review it on Email Outreach, then send from your mail app.');
+  }catch(err){
+    console.error(err);
+    toast('Could not open email draft — '+((err&&err.message)||err));
+  }
+}
+function emailPickTemplate(templateId){
+  if(!templateId) return;
+  emailTplMenuOpen=false;
+  const acctId=emailCompose&&emailCompose.acctId || ($('#emailAcctSel')&&$('#emailAcctSel').value)||'';
+  emailCompose=buildEmailDraft(templateId,acctId);
+  route();
+  setTimeout(()=>{ const el=document.getElementById('emailComposer'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); },40);
+}
+function emailPickAcct(acctId){
+  const templateId=(emailCompose&&emailCompose.templateId)||'cust_followup';
+  emailCompose=buildEmailDraft(templateId,acctId||'');
+  route();
+}
+function emailSetAudience(v){ emailAudienceFilter=v; route(); }
+function emailSyncFields(){
+  if(!emailCompose) return;
+  const to=$('#emailTo'), cc=$('#emailCc'), sub=$('#emailSubject'), body=$('#emailBody'), conf=$('#emailConfirm');
+  if(to) emailCompose.to=to.value;
+  if(cc) emailCompose.cc=cc.value;
+  if(sub) emailCompose.subject=sub.value;
+  if(body) emailCompose.body=body.value;
+  if(conf) emailCompose.confirmed=!!conf.checked;
+}
+function emailOnConfirmToggle(){
+  emailSyncFields();
+  const ready=!!(emailCompose&&emailCompose.confirmed);
+  document.querySelectorAll('[data-email-send]').forEach(b=>{ b.disabled=!ready; });
+}
+function emailRequireConfirm(){
+  emailSyncFields();
+  if(!emailCompose){ toast('Pick a template first.'); return false; }
+  if(!emailCompose.confirmed){ toast('Check the review box before sending yourself.'); return false; }
+  if(!(emailCompose.subject||'').trim()){ toast('Add a subject line.'); return false; }
+  if(!(emailCompose.body||'').trim()){ toast('Add a message body.'); return false; }
+  return true;
+}
+function emailPlainText(){
+  const d=emailCompose; if(!d) return '';
+  return `To: ${d.to||'(add recipient)'}\nCc: ${d.cc||''}\nSubject: ${d.subject||''}\n\n${d.body||''}`.trim();
+}
+async function emailCopyAll(){
+  if(!emailRequireConfirm()) return;
+  const text=emailPlainText();
+  try{
+    await navigator.clipboard.writeText(text);
+    emailRecordDraft('copied');
+    toast('Copied — paste into Outlook or Gmail and send.');
+  }catch(e){
+    // Fallback for older browsers / insecure context
+    const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); emailRecordDraft('copied'); toast('Copied — paste into Outlook or Gmail and send.'); }
+    catch(err){ toast('Could not copy — select the draft and copy manually.'); }
+    ta.remove();
+  }
+}
+function emailOpenMailto(){
+  if(!emailRequireConfirm()) return;
+  const d=emailCompose;
+  const to=encodeURIComponent(d.to||'');
+  const cc=encodeURIComponent(d.cc||'');
+  const subject=encodeURIComponent(d.subject||'');
+  let body=d.body||'';
+  // mailto length safety — keep body reasonable
+  if(body.length>1800) body=body.slice(0,1800)+'\n\n[Message truncated for mail app — use Copy if you need the full draft]';
+  const href=`mailto:${to}?${cc?`cc=${cc}&`:''}subject=${subject}&body=${encodeURIComponent(body)}`;
+  emailRecordDraft('mailto');
+  window.location.href=href;
+  toast('Opened your mail app — review once more, then send.');
+}
+function emailRecordDraft(action){
+  if(!emailCompose) return;
+  emailSyncFields();
+  const a=STATE.accounts.find(x=>x.id===emailCompose.acctId);
+  const tpl=EMAIL_TEMPLATES.find(t=>t.id===emailCompose.templateId);
+  emailDrafts.unshift({
+    id:cid(), t:new Date().toISOString(), action,
+    templateId:emailCompose.templateId, templateName:tpl?tpl.name:emailCompose.templateId,
+    audience:emailCompose.audience, acctId:emailCompose.acctId||'',
+    acctName:a?a.name:'', subject:emailCompose.subject, to:emailCompose.to
   });
+  emailDrafts=emailDrafts.slice(0,40);
+  saveEmailDrafts();
+  // Also log a light activity touch on the account when customer-facing
+  if(emailCompose.audience==='customer'&&emailCompose.acctId){
+    const cur=acctActivity[emailCompose.acctId]=acctActivity[emailCompose.acctId]||{log:[],next:null};
+    cur.log=cur.log||[];
+    cur.log.push({id:cid(),type:'Email',subject:emailCompose.subject||'(draft prepared)',notes:`Prepared via Email Outreach (${action}) — sent manually by CSM after review.`,t:new Date().toISOString()});
+    if(cur.log.length>80) cur.log=cur.log.slice(-80);
+    saveAcctActivity();
+    syncLastActFromActivity(emailCompose.acctId);
+    if(a){ try{ scoreAccount(a); }catch(e){} }
+  }
+  route();
+}
+function emailClearCompose(){ emailCompose=null; route(); }
+
+function emailSuggestedFor(accts){
+  const out=[];
+  accts.forEach(a=>{
+    EMAIL_TEMPLATES.forEach(tpl=>{
+      if(tpl.suggest(a)) out.push({a,tpl});
+    });
+  });
+  // Prefer higher urgency templates first
+  const rank={cust_save:0,int_escalation:1,cust_nps:2,cust_tap:3,int_tap:4,cust_renewal:5,int_renewal:6,cust_welcome:7,cust_product:8};
+  out.sort((x,y)=>(rank[x.tpl.id]??99)-(rank[y.tpl.id]??99)||(y.a.riskARR||0)-(x.a.riskARR||0));
+  // Dedupe account+template
+  const seen=new Set();
+  return out.filter(o=>{ const k=o.a.id+'|'+o.tpl.id; if(seen.has(k)) return false; seen.add(k); return true; });
+}
+
+function viewEmails(accts){
+  const templates=EMAIL_TEMPLATES.filter(t=>emailAudienceFilter==='all'||t.audience===emailAudienceFilter);
+  const ownerAccts=[...accts].sort((a,b)=>a.name<b.name?-1:1);
+  const d=emailCompose;
+  const tpl=d?EMAIL_TEMPLATES.find(t=>t.id===d.templateId):null;
+  const hist=emailDrafts.slice(0,12);
+
+  const custTpls=templates.filter(t=>t.audience==='customer');
+  const intTpls=templates.filter(t=>t.audience==='internal');
+  const menuGroup=(label,list)=>!list.length?'':`<div class="email-dd-group"><div class="email-dd-label">${esc(label)}</div>${list.map(t=>`<button type="button" class="email-dd-item${d&&d.templateId===t.id?' selected':''}" role="option" onclick="emailPickTemplate('${t.id}')"><span class="email-dd-item-title">${esc(t.name)}</span><span class="email-dd-item-desc">${esc(t.desc)}</span></button>`).join('')}</div>`;
+
+  let html=`<div class="card"><h3>Email Outreach <span class="hint">filled templates · you review &amp; send yourself — the app never sends mail automatically</span></h3>
+  <p class="mini" style="line-height:1.7">Open the template menu, scroll to pick one, choose an account, edit the draft, then check <b>I've reviewed this</b> to unlock Copy or Open in mail.</p>
+  <div class="email-tpl-bar" style="margin-top:12px">
+    <label class="mini">Show
+      <select class="select" style="display:block;min-width:140px;margin-top:4px" onchange="emailTplMenuOpen=false;emailSetAudience(this.value)">
+        <option value="all"${emailAudienceFilter==='all'?' selected':''}>All templates</option>
+        <option value="customer"${emailAudienceFilter==='customer'?' selected':''}>Customer only</option>
+        <option value="internal"${emailAudienceFilter==='internal'?' selected':''}>Internal only</option>
+      </select>
+    </label>
+    <div class="email-dd" style="flex:1;min-width:260px">
+      <span class="mini">Template</span>
+      <button type="button" class="email-dd-btn${emailTplMenuOpen?' open':''}" id="emailTplBtn" aria-haspopup="listbox" aria-expanded="${emailTplMenuOpen?'true':'false'}" onclick="toggleEmailTplMenu()">
+        <span class="email-dd-btn-text">${tpl?esc(tpl.name):'Choose a template…'}</span>
+        <span class="email-dd-caret" aria-hidden="true">▾</span>
+      </button>
+      <div class="email-dd-menu" id="emailTplMenu" role="listbox"${emailTplMenuOpen?'':' hidden'}>
+        ${menuGroup('Customer',custTpls)}
+        ${menuGroup('Internal (Axon)',intTpls)}
+        ${!templates.length?'<p class="mini" style="padding:12px">No templates in this filter.</p>':''}
+      </div>
+    </div>
+  </div>
+  ${tpl?`<p class="mini" style="margin-top:8px"><span class="pill ${tpl.audience==='customer'?'p-blue':'p-amber'}">${tpl.audience==='customer'?'Customer':'Internal'}</span> ${esc(tpl.desc)}</p>`:''}
+  </div>`;
+
+  html+=`<div class="card" id="emailComposer"><h3>Composer <span class="hint">${tpl?esc(tpl.name):'pick a template above to start'}${d&&d.acctId?` · ${esc((STATE.accounts.find(a=>a.id===d.acctId)||{}).name||'')}`:''}</span></h3>`;
+  if(!d){
+    html+=`<p class="mini">Choose a template from the dropdown above to generate a filled draft.</p></div>`;
+  } else {
+    html+=`<div class="email-compose">
+      <label class="mini">Account<br>
+        <select class="select" id="emailAcctSel" style="min-width:220px;margin-top:4px" onchange="emailPickAcct(this.value)">
+          <option value="">— optional / general —</option>
+          ${ownerAccts.map(a=>`<option value="${a.id}"${d.acctId===a.id?' selected':''}>${esc(a.name)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="mini">To<br><input id="emailTo" type="text" value="${esc(d.to)}" placeholder="name@agency.gov" style="width:100%;margin-top:4px;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" oninput="emailSyncFields()"></label>
+      <label class="mini">Cc<br><input id="emailCc" type="text" value="${esc(d.cc)}" placeholder="optional" style="width:100%;margin-top:4px;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" oninput="emailSyncFields()"></label>
+      <label class="mini">Subject<br><input id="emailSubject" type="text" value="${esc(d.subject)}" style="width:100%;margin-top:4px;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" oninput="emailSyncFields()"></label>
+      <label class="mini">Message<br><textarea id="emailBody" class="notes-in email-body" rows="14" oninput="emailSyncFields()">${esc(d.body)}</textarea></label>
+      <label class="email-confirm"><input type="checkbox" id="emailConfirm"${d.confirmed?' checked':''} onchange="emailOnConfirmToggle()"> I've reviewed this draft and will send it myself from my email client</label>
+      <div class="row-actions" style="margin-top:12px;flex-wrap:wrap">
+        <button class="btn primary" data-email-send ${d.confirmed?'':'disabled'} onclick="emailCopyAll()">Copy for Outlook / Gmail</button>
+        <button class="btn" data-email-send ${d.confirmed?'':'disabled'} onclick="emailOpenMailto()">Open in mail app</button>
+        <button class="btn sm" onclick="emailClearCompose()">Clear</button>
+      </div>
+      <p class="mini" style="margin-top:10px;color:var(--muted)">Nothing is emailed from this app. After you send from your client, the draft is logged here${d.audience==='customer'?' and as Email activity on the account':''}.</p>
+    </div></div>`;
+  }
+
+  if(hist.length){
+    html+=`<div class="card"><h3>Recently prepared <span class="hint">local history — not proof of delivery</span></h3>
+    <table><thead><tr><th>When</th><th>Template</th><th>Account</th><th>Subject</th><th>Action</th></tr></thead><tbody>
+    ${hist.map(h=>`<tr><td class="mini">${new Date(h.t).toLocaleString()}</td><td><span class="pill ${h.audience==='customer'?'p-blue':'p-amber'}">${esc(h.templateName)}</span></td><td>${h.acctId?`<span onclick="openAcct('${h.acctId}')" style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)">${esc(h.acctName||'account')}</span>`:'<span class="mini">—</span>'}</td><td>${esc(h.subject)}</td><td class="mini">${esc(h.action)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  }
   return html;
 }
 
@@ -1843,11 +2456,14 @@ window.boot=boot; window.restart=restart;
 
 document.querySelectorAll('#tabs button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWeights,resetWeights,filterTable,toggleComm,addEscNote,setTab,
-  setEscStatus:(i,s)=>{setEscStatus(i,s);route();},
+  setEscStatus:(i,s)=>{setEscStatus(i,s); if(STATE.tab==='escalations') route();},
+  startEscalation,setEscReason,setEscProduct,toggleEscStep,
   setCsat,generateAllNewLogos,createOrOpenPlan,openPlan,setPlanObjectives,setPlanNotes,togglePlanMs,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
-  setOwnerFilter,addCta,acceptAutoCta,ctaAction,delCta,quickCta,setJourneyStatus,toggleJourney,
-  addInsight,delResource,submitResource,setTarget,
+  setOwnerFilter,addCta,acceptAutoCta,ctaAction,delCta,quickCta,
+  addInsight,delResource,submitResource,setTarget,setAdoptionCfg,setUsageKpi,
   logActivity,delActivity,saveNextStep,clearNextStep,
-  openCsmDrilldown,openCsmImprove,runCsmImproveAction});
+  openCsmDrilldown,openCsmImprove,runCsmImproveAction,
+  startEmailCompose,composeEmailForAcct,emailPickTemplate,emailPickAcct,emailSetAudience,toggleEmailTplMenu,
+  emailSyncFields,emailOnConfirmToggle,emailCopyAll,emailOpenMailto,emailClearCompose,toast});
 
 boot();

@@ -1,20 +1,21 @@
 # Axon CS Command Center
 
-A standalone, dark-themed rebuild of the Axon Customer Success Command Center — a
-lightweight, Gainsight-style renewal/health dashboard. Originally built as a Claude
-Cowork artifact reading Salesforce through Cowork's MCP bridge; this version runs as
-a normal local web app with its own backend, so it works outside Cowork too.
+A standalone rebuild of the Axon Customer Success Command Center — a lightweight,
+Gainsight-style renewal/health dashboard. Originally built as a Claude Cowork
+artifact reading Salesforce through Cowork's MCP bridge; this version runs as a
+normal local web app with its own backend, so it works outside Cowork too.
 
 ## What's here
 
 - `backend/` — a small FastAPI server. It exposes one generic endpoint,
   `POST /api/soql`, that runs a SOQL query and returns `{records: [...]}`. It also
   serves the frontend.
-- `frontend/` — classic UI. `index.html` landing page; dashboard at `app.html`
-  (`styles.css`, `app.js`).
-- `frontend-axon/` — **Axon Yellow UI experiment** (light white/black/yellow
-  chrome; green/amber/red for health, risk, and charts). Same product logic via
-  shared `/assets/app.js`; open at **http://127.0.0.1:8420/axon/**.
+- `frontend-axon/` — **primary UI** (Axon Yellow chrome: white/black/yellow;
+  green/amber/red for health, risk, and charts). Landing at `/`, dashboard at
+  `/app.html`.
+- `frontend/` — shared product logic (`app.js`, `theme.js`) and Resource Library
+  pages, served under `/assets/`. A legacy classic skin remains available at
+  `/classic/` if needed, but is not linked from the main app.
 - `NOTES.md` — design notes distilled from a conversation with an Axon enterprise CS
   leader, with attributed quotes, and exactly which features in this app trace back to
   that guidance (4-metric CSM Scorecard, engagement cadence, blocked/aging Case Watch,
@@ -31,7 +32,7 @@ a normal local web app with its own backend, so it works outside Cowork too.
 - **"View as [CSM]"** dropdown — filters the entire app (every tab, every chart) down to one CSM's book, session-only.
 - **Org Drill-down scope** — most tabs respect whatever team/manager/CSM you've scoped to via Org Drill-down, shown as a "Scope: ___" breadcrumb.
 - Clickable KPI tiles throughout — clicking one both filters the table below it and, on Home/Overview, jumps straight to the relevant tab.
-- **Light / dark mode** — toggle in the header (and on Resource Library pages). Preference is saved in the browser and shared across classic UI, Axon Yellow UI, and resource docs.
+- **Light / dark mode** — toggle in the header (and on Resource Library pages). Preference is saved in the browser.
 
 ### Home
 - Headline KPIs, deliberately ordered to lead with **engagement rate, growth (organic/expansion/transactional), customer insights logged, and Book NPS** before ARR/health — per CS-leadership guidance (see `NOTES.md`).
@@ -88,9 +89,10 @@ a normal local web app with its own backend, so it works outside Cowork too.
 - Editable objectives, milestones (with due dates and done-state), and freeform notes — all persisted per account.
 - **Standardized "Deal & account discovery" template** on every plan — purchasing story, stakeholders, incumbent, reason for purchase, goals/outcomes, pain points, "what does winning look like," blockers, politics, irregular contract terms, welcome deck link, and SLA tracking info. Same structured fields on every plan regardless of CSM; optional and collapsed by default so it doesn't force detail nobody needs.
 
-### Journeys
-- Four lifecycle outreach journeys (New Logo Welcome, Renewal 90-Day, At-Risk Save Play, Product Adoption Nudge) with membership **auto-derived from live account signals**.
-- Per-account progress tracking (Not started / In progress / Done). Emails themselves send from your real outreach tool — this tab orchestrates and tracks, it doesn't send mail.
+### Email Outreach
+- Customer and internal (Axon) email templates for common situations: welcome, renewal, TAP, save play, NPS follow-up, product update, meeting follow-up, handoff, leadership escalation, TAP coordination, renewal risk, coaching.
+- Live **suggestions** from book signals, plus a filled composer. CSMs edit the draft, check **I've reviewed this**, then **Copy** or **Open in mail app** — the app never sends email itself.
+- Contact emails can be stored on Account 360 (“Who's on this account”) so To/Cc pre-fill. Prepared drafts are logged locally (and as Email activity on the account for customer-facing notes).
 
 ### My Worklist
 - A single prioritized action list across your whole scope — renewals stuck in early stage close to their date, open high/urgent cases, unplanned new logos, strained sentiment, large at-risk renewals, and "get ahead" nudges — ranked by urgency then revenue.
@@ -217,7 +219,7 @@ answer came from the mock engine or your real org.
 ## Notes
 
 - All of the interactive state a CSM creates in the app — success plans, CTAs,
-  escalation notes, journey progress, CSAT overrides, health-model weights, customer
+  escalation notes, CSAT overrides, health-model weights, customer
   insights, the resource library, CSM Scorecard targets, and logged activity /
   next steps — is saved in the browser's `localStorage`, exactly like the original
   artifact. It is not sent to Salesforce or the backend.

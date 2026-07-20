@@ -1,14 +1,13 @@
-/* Compact light/dark toggle — shared across classic UI, Axon UI, and Resource Library. */
+/* Compact light/dark toggle — shared across the Command Center UI and Resource Library. */
 (function () {
   const KEY = 'cscc-color-theme';
   const ICON_SUN = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
   const ICON_MOON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>';
 
   function defaultTheme() {
-    if (document.documentElement.getAttribute('data-ui') === 'axon') return 'light';
-    if (location.pathname.indexOf('/resources/') !== -1) return 'light';
-    if (location.pathname.indexOf('/axon') === 0) return 'light';
-    return 'dark';
+    // Primary UI + resource docs default to light; legacy classic skin defaults dark.
+    if (document.documentElement.getAttribute('data-ui') === 'classic') return 'dark';
+    return 'light';
   }
 
   function getTheme() {

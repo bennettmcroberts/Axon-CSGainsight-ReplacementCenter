@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,8 +19,12 @@ from .mock_engine import run_mock_query
 from .salesforce_client import SalesforceUnavailable, run_salesforce_query
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-FRONTEND_DIR = (BACKEND_DIR.parent / "frontend").resolve()
-FRONTEND_AXON_DIR = (BACKEND_DIR.parent / "frontend-axon").resolve()
+# Shared JS, Resource Library pages, and other static assets live under frontend/.
+FRONTEND_ASSETS_DIR = (BACKEND_DIR.parent / "frontend").resolve()
+# Primary UI (Axon Yellow chrome) lives under frontend-axon/.
+FRONTEND_UI_DIR = (BACKEND_DIR.parent / "frontend-axon").resolve()
+# Legacy classic UI kept available at /classic/ only.
+FRONTEND_CLASSIC_DIR = FRONTEND_ASSETS_DIR
 
 app = FastAPI(title="Axon CS Command Center API")
 
@@ -66,31 +70,46 @@ def soql(body: SoqlRequest):
     return {"records": records, "totalSize": len(records), "done": True}
 
 
-if FRONTEND_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
+if FRONTEND_ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS_DIR), name="assets")
 
+if FRONTEND_UI_DIR.exists():
     @app.get("/")
     def index():
-        return FileResponse(FRONTEND_DIR / "index.html")
+        return FileResponse(FRONTEND_UI_DIR / "index.html")
 
-    # Parallel "Axon Yellow" UI experiment — same /api + shared /assets/app.js,
-    # different HTML/CSS under frontend-axon/. Open at /axon/
-    if FRONTEND_AXON_DIR.exists():
-        @app.get("/axon")
-        @app.get("/axon/")
-        def axon_index():
-            return FileResponse(FRONTEND_AXON_DIR / "index.html")
+    # Old /axon bookmarks → primary UI
+    @app.get("/axon")
+    @app.get("/axon/")
+    def axon_redirect():
+        return RedirectResponse(url="/", status_code=307)
 
-        @app.get("/axon/{filename}")
-        def axon_file(filename: str):
-            candidate = FRONTEND_AXON_DIR / filename
-            if candidate.is_file():
-                return FileResponse(candidate)
-            raise HTTPException(status_code=404, detail="Not found")
+    @app.get("/axon/{filename}")
+    def axon_file_redirect(filename: str):
+        return RedirectResponse(url=f"/{filename}", status_code=307)
 
-    @app.get("/{filename}")
-    def frontend_file(filename: str):
-        candidate = FRONTEND_DIR / filename
+# Optional legacy classic UI (not linked from the primary app)
+if FRONTEND_CLASSIC_DIR.exists():
+    @app.get("/classic")
+    @app.get("/classic/")
+    def classic_index():
+        return FileResponse(FRONTEND_CLASSIC_DIR / "index.html")
+
+    @app.get("/classic/{filename}")
+    def classic_file(filename: str):
+        candidate = FRONTEND_CLASSIC_DIR / filename
         if candidate.is_file():
             return FileResponse(candidate)
+        raise HTTPException(status_code=404, detail="Not found")
+
+if FRONTEND_UI_DIR.exists():
+    @app.get("/{filename}")
+    def frontend_file(filename: str):
+        candidate = FRONTEND_UI_DIR / filename
+        if candidate.is_file():
+            return FileResponse(candidate)
+        # Shared files still live under frontend/ (e.g. theme helpers if ever linked at root)
+        shared = FRONTEND_ASSETS_DIR / filename
+        if shared.is_file():
+            return FileResponse(shared)
         raise HTTPException(status_code=404, detail="Not found")

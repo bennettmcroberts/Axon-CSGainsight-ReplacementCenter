@@ -320,3 +320,28 @@ tbody tr:hover{background:var(--panel2)}
 .resrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:var(--panel2);border:1px solid var(--line-soft);border-radius:var(--radius-sm)}
 .resrow a{color:var(--ink);font-weight:600;text-decoration:underline;text-decoration-color:var(--yellow);text-decoration-thickness:1.5px}
 .resrow a:hover{color:var(--yellow)}
+
+/* email outreach */
+.email-suggest-list{display:flex;flex-direction:column;gap:8px}
+.email-suggest{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--panel2)}
+.email-tpl-bar{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px}
+.email-dd{position:relative;display:flex;flex-direction:column;gap:4px}
+.email-dd-btn{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;margin-top:4px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);font:inherit;font-weight:600;cursor:pointer;text-align:left}
+.email-dd-btn:hover,.email-dd-btn.open{border-color:var(--yellow)}
+.email-dd-btn-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.email-dd-caret{color:var(--muted);font-size:12px;flex:0 0 auto}
+.email-dd-btn.open .email-dd-caret{transform:rotate(180deg)}
+.email-dd-menu{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:30;max-height:280px;overflow-y:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:var(--shadow-md);padding:6px}
+.email-dd-menu[hidden]{display:none!important}
+.email-dd-group{padding:4px 0 8px}
+.email-dd-label{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:6px 10px 4px}
+.email-dd-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:10px 12px;border:none;border-radius:8px;background:transparent;color:var(--ink);font:inherit;cursor:pointer;text-align:left}
+.email-dd-item:hover{background:var(--panel2)}
+.email-dd-item.selected{background:rgba(255,212,0,.12);box-shadow:inset 0 0 0 1px rgba(255,212,0,.35)}
+.email-dd-item-title{font-weight:700;font-size:13px}
+.email-dd-item-desc{font-size:12px;color:var(--muted);line-height:1.4}
+.email-compose{display:flex;flex-direction:column;gap:12px;max-width:820px}
+.email-body{min-height:220px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+.email-confirm{display:flex;align-items:flex-start;gap:10px;font-size:13px;font-weight:600;margin-top:4px;cursor:pointer}
+.email-confirm input{margin-top:3px}
+button[data-email-send]:disabled{opacity:.45;cursor:not-allowed}

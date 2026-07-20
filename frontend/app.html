@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=20260716f">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
 </head>
 <body>
@@ -40,13 +40,14 @@
       <button data-tab="renewals"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.3L3 8M3 3v5h5"/></svg><span>Renewals</span></button>
       <button data-tab="tap"><svg class="ic" viewBox="0 0 24 24"><path d="M4 4v5h5M20 20v-5h-5M5.5 9A7 7 0 0 1 19 12M18.5 15A7 7 0 0 1 5 12"/></svg><span>TAP Refreshes</span><span class="b" id="tapBadge">0</span></button>
       <button data-tab="scorecard"><svg class="ic" viewBox="0 0 24 24"><path d="M9 17V9m6 8V5M4 20h16M4 4h4v4H4zm12 0h4v4h-4z"/></svg><span>CSM Scorecard</span></button>
+      <button data-tab="usage"><svg class="ic" viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l4-5 3 3 5-7"/></svg><span>Usage &amp; Adoption</span><span class="b" id="usageBadge">0</span></button>
       <div class="sec sec-amber">Act</div>
       <button data-tab="ctas"><span>CTAs</span><span class="b" id="ctaBadge">0</span></button>
       <button data-tab="escalations"><span>Escalations</span><span class="b" id="escBadge">0</span></button>
       <button data-tab="casewatch"><span>Case Watch</span><span class="b" id="caseBadge">0</span></button>
       <button data-tab="engagement"><span>Engagement</span><span class="b" id="cadenceBadge">0</span></button>
       <button data-tab="plans"><span>Success Plans</span></button>
-      <button data-tab="journeys"><span>Journeys</span></button>
+      <button data-tab="emails"><span>Email Outreach</span></button>
       <button data-tab="worklist"><span>My Worklist</span></button>
       <div class="sec sec-violet">Configure</div>
       <button data-tab="model"><span>Health Model</span></button>
@@ -78,7 +79,7 @@
 <div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
 <div id="toastHost"></div>
 
-<script src="theme.js"></script>
-<script src="app.js"></script>
+<script src="theme.js?v=20260716d"></script>
+<script src="app.js?v=20260716f"></script>
 </body>
 </html>

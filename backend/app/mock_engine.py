@@ -35,6 +35,18 @@ GROWTH_TYPES = ["Renewal", "Expansion", "Transactional"]
 # hardware, so they don't carry a TAP refresh cycle.
 TAP_HARDWARE_FAMILIES = ["Cart", "FLEX 2", "X26", "BODYCAM3", "FLEET", "AIR", "INTERVIEW"]
 
+# Seat/device-based product families whose adoption a CSM actually tracks (active
+# users / active devices vs. what was provisioned). Consumables (Cart) and
+# one-off Training engagements aren't seat-adoption motions, so they're excluded.
+ADOPTION_PRODUCTS = ["SAAS", "BODYCAM3", "FLEET", "AIR", "INTERVIEW", "COMMANDER", "FLEX 2"]
+# Provisioned-seat ranges by segment - bigger agencies license far more seats.
+SEAT_SCALE = {
+    "Strategic": (120, 900),
+    "Enterprise": (60, 400),
+    "Mid-Market": (20, 140),
+    "SMB": (5, 45),
+}
+
 STAGES_EARLY = ["Discovering", "Pre Sales", "Interest", "Qualifying", "Evaluation/Scoping", "Prospecting"]
 STAGES_LATE = ["Value Proposition", "Proposal/Price Quote", "Negotiation/Review", "Contract Sent", "Verbal Commit"]
 
@@ -111,6 +123,11 @@ class MockAccount:
     line_items: list[dict] = field(default_factory=list)
     tasks: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
+    # Product usage / adoption. Per Beatrice's (CSM) stakeholder finding, this is
+    # the single biggest gap in Gainsight today: usage/adoption data lives in the
+    # product-analytics Snowflake and is surfaced through Sigma reports, not in
+    # Salesforce - so it's a periodic (manual) export rather than a live feed.
+    usage: dict = field(default_factory=dict)
 
 
 class MockDataset:
@@ -223,6 +240,7 @@ class MockDataset:
             self._build_deals_and_products(acct, risk_tier)
             self._build_comms(acct, owner)
             self._build_nps(acct, risk_tier)
+            self._build_usage(acct, risk_tier)
 
             self.accounts[acc_id] = acct
 
@@ -366,6 +384,62 @@ class MockDataset:
         days_since_survey = rng.randint(1, 180)  # biannual cadence
         acct.nps_survey_date = (self.today - timedelta(days=days_since_survey)).isoformat()
 
+    def _build_usage(self, acct: MockAccount, risk_tier: str) -> None:
+        # Per Beatrice's (CSM) finding: usage/adoption is a periodic Snowflake/Sigma
+        # export, so not every account has been synced yet (~12% have no usage row).
+        # Adoption, trend and commission attainment all skew with account health.
+        rng = self.rng
+        if rng.random() < 0.12:
+            acct.usage = {}
+            return
+
+        adopt_band = {"atrisk": (0.10, 0.45), "watch": (0.40, 0.72), "healthy": (0.62, 0.96)}[risk_tier]
+        base_adopt = rng.uniform(*adopt_band)
+
+        families_owned = {li["family"] for li in acct.line_items}
+        prod_families = [f for f in ADOPTION_PRODUCTS if f in families_owned]
+        if not prod_families:
+            prod_families = ["SAAS"]  # every agency has an Evidence.com footprint
+
+        seat_scale = SEAT_SCALE.get(acct.segment, SEAT_SCALE["Mid-Market"])
+        products = []
+        tot_lic = tot_act = 0
+        for fam in prod_families:
+            licensed = rng.randint(*seat_scale)
+            pct = max(0.0, min(1.0, base_adopt + rng.uniform(-0.12, 0.12)))
+            active = int(round(licensed * pct))
+            products.append({
+                "family": fam,
+                "licensed": licensed,
+                "active": active,
+                "pct": round(pct * 100),
+            })
+            tot_lic += licensed
+            tot_act += active
+
+        overall_pct = round(tot_act / tot_lic * 100) if tot_lic else 0
+        trend_band = {"atrisk": (-18, 4), "watch": (-8, 11), "healthy": (-2, 17)}[risk_tier]
+        trend = rng.randint(*trend_band)
+
+        # CSMs carry an annual attainment target per account (expansion + renewal
+        # goal that feeds their commission). Attainment skews with health.
+        renewal_amt = acct.renewal_opps[0]["Amount"] if acct.renewal_opps else 50000.0
+        comm_target = round(renewal_amt * rng.uniform(0.12, 0.35), -2)
+        attain_band = {"atrisk": (0.25, 0.75), "watch": (0.60, 1.02), "healthy": (0.85, 1.35)}[risk_tier]
+        comm_attained = round(comm_target * rng.uniform(*attain_band), -2)
+
+        days_since_sync = rng.randint(0, 13)
+        acct.usage = {
+            "seats_licensed": tot_lic,
+            "seats_active": tot_act,
+            "adoption_pct": overall_pct,
+            "trend_pct": trend,
+            "commission_target": comm_target,
+            "commission_attained": comm_attained,
+            "last_sync": (self.today - timedelta(days=days_since_sync)).isoformat(),
+            "products": products,
+        }
+
     # ---------- query handling ----------
     def _extract_quoted(self, text: str) -> list[str]:
         return re.findall(r"'([A-Za-z0-9_]+)'", text)
@@ -378,6 +452,8 @@ class MockDataset:
         q = query.strip()
         qlow = q.lower()
 
+        if "from productusage__c" in qlow:
+            return self._q_usage(q)
         if "from account" in qlow and "nps" in qlow:
             return self._q_nps(q)
         if "from opportunitylineitem" in qlow and "family__c" in qlow:
@@ -509,6 +585,27 @@ class MockDataset:
             acc = self.accounts.get(acc_id)
             if acc and acc.hw_first_purchase:
                 out.append({"AccountId": acc_id, "HwFirstPurchase__c": acc.hw_first_purchase})
+        return out
+
+    def _q_usage(self, q: str) -> list[dict]:
+        ids = set(self._extract_quoted(q))
+        out = []
+        for acc_id in ids:
+            acc = self.accounts.get(acc_id)
+            if not acc or not acc.usage:
+                continue
+            u = acc.usage
+            out.append({
+                "AccountId": acc_id,
+                "SeatsLicensed__c": u["seats_licensed"],
+                "SeatsActive__c": u["seats_active"],
+                "AdoptionPct__c": u["adoption_pct"],
+                "UsageTrendPct__c": u["trend_pct"],
+                "CommissionTarget__c": u["commission_target"],
+                "CommissionAttained__c": u["commission_attained"],
+                "LastUsageSync__c": u["last_sync"],
+                "Products": u["products"],
+            })
         return out
 
     def _q_nps(self, q: str) -> list[dict]:

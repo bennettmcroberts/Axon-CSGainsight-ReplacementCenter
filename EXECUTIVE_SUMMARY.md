@@ -59,8 +59,6 @@ coaching visibility, etc.) that people can't already get elsewhere.
   including a standardized "deal & account discovery" template (purchasing
   story, stakeholders, blockers, politics, SLA info, etc.) so every plan
   captures the same context regardless of who owns the account.
-- **Journeys** — lifecycle outreach tracking (welcome, renewal, save play,
-  adoption) with auto-derived membership.
 - **My Worklist** — one prioritized action list ranked by urgency and revenue, including open/overdue next steps reps documented on accounts.
 - **Activity & next steps (Account 360)** — reps can log calls/emails/meetings/notes and capture the next action with a due date, so past outreach and “what happens next” stay current without waiting on Salesforce write-back.
 
@@ -78,7 +76,7 @@ coaching visibility, etc.) that people can't already get elsewhere.
 - Frontend: a single-page app (no framework) that calls that endpoint and
   renders everything client-side.
 - Anything a CSM creates in-app today (success plans, CTAs, escalation notes,
-  journey progress, insights, targets) is saved in the browser's `localStorage`
+  insights, targets) is saved in the browser's `localStorage`
   — it's meant as a placeholder for real Salesforce fields, not a permanent home
   for that data, so it won't yet sync across teammates or devices.
 
