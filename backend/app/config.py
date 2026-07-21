@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import secrets
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,6 +32,16 @@ class Settings:
         self.mock_seed = int(os.getenv("MOCK_SEED", "42"))
         self.mock_account_count = int(os.getenv("MOCK_ACCOUNT_COUNT", "64"))
         self.port = int(os.getenv("PORT", "8420"))
+        session_secret = _clean(os.getenv("SESSION_SECRET"))
+        if not session_secret:
+            session_secret = secrets.token_hex(32)
+            print(
+                "WARNING: SESSION_SECRET not set in backend/.env - generated a random one "
+                "for this run. Everyone will be logged out on restart. Set SESSION_SECRET "
+                "in backend/.env for logins to persist across restarts.",
+                file=sys.stderr,
+            )
+        self.session_secret = session_secret
 
     @property
     def salesforce_configured(self) -> bool:

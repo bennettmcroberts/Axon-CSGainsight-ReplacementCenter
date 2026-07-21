@@ -10,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css?v=20260720d">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+<!--AUTH_USER-->
 </head>
 <body>
 <header class="top">
@@ -27,6 +28,8 @@
     <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle color theme"></button>
     <span class="modebadge" id="modeBadge">connecting&hellip;</span>
     <span id="asof"></span>
+    <span class="mini" id="whoami" style="color:var(--muted)"></span>
+    <button type="button" class="btn sm" id="logoutBtn" onclick="doLogout()">Log out</button>
   </div>
 </header>
 
@@ -81,6 +84,6 @@
 <div id="toastHost"></div>
 
 <script src="theme.js?v=20260716d"></script>
-<script src="app.js?v=20260720g"></script>
+<script src="app.js?v=20260721a"></script>
 </body>
 </html>

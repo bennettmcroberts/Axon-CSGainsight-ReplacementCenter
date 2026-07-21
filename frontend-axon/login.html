@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" data-ui="axon">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Axon CS Command Center</title>
+<script>!function(){var t=localStorage.getItem('cscc-color-theme');document.documentElement.setAttribute('data-theme',t==='dark'||t==='light'?t:'light')}()</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="landing.css">
+<style>
+.login-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);
+  padding:32px 32px 28px;width:100%;max-width:340px;margin:22px auto 0;text-align:left}
+.login-card label{display:block;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:14px 0 6px}
+.login-card input{width:100%;border:1px solid var(--line);padding:10px 12px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)}
+.login-card button{width:100%;margin-top:20px}
+.login-err{color:var(--red);font-size:12.5px;font-weight:700;margin-top:12px;min-height:16px}
+</style>
+</head>
+<body class="landing-body">
+
+<div class="landing-theme-bar">
+  <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle color theme"></button>
+</div>
+
+<div class="landing">
+  <div class="landing-logo" aria-label="Axon">
+    <svg class="landing-logo-mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 2.5 38.2 37.5H1.8L20 2.5Z"/></svg>
+    <span class="landing-logo-text">AXON</span>
+  </div>
+  <div class="landing-eyebrow">Customer Success</div>
+  <h1 class="landing-title" style="font-size:34px">Sign in</h1>
+
+  <form class="login-card" id="loginForm">
+    <label for="loginUser">Username</label>
+    <input id="loginUser" name="username" autocomplete="username" autofocus>
+    <label for="loginPass">Password</label>
+    <input id="loginPass" name="password" type="password" autocomplete="current-password">
+    <button type="submit" class="btn primary">Sign in</button>
+    <div class="login-err" id="loginErr"></div>
+  </form>
+
+  <div class="landing-foot" style="margin-top:24px">Internal tool · Protect Life<br>No account? Ask whoever runs this instance to add one with <code>manage_users.py</code>.</div>
+</div>
+
+<script src="/assets/theme.js"></script>
+<script>
+document.getElementById('loginForm').addEventListener('submit', async function(ev){
+  ev.preventDefault();
+  var err = document.getElementById('loginErr');
+  err.textContent = '';
+  var username = document.getElementById('loginUser').value.trim();
+  var password = document.getElementById('loginPass').value;
+  if(!username || !password){ err.textContent = 'Enter a username and password.'; return; }
+  try{
+    var res = await fetch('/api/auth/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password})});
+    if(!res.ok){
+      var detail = 'Sign in failed.';
+      try{ var body = await res.json(); if(body && body.detail) detail = body.detail; }catch(e){}
+      err.textContent = detail;
+      return;
+    }
+    var params = new URLSearchParams(window.location.search);
+    window.location.href = params.get('next') || '/app.html';
+  }catch(e){
+    err.textContent = 'Could not reach the server — is it running?';
+  }
+});
+</script>
+</body>
+</html>

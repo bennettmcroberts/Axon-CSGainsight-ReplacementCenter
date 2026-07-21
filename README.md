@@ -139,6 +139,36 @@ uvicorn app.main:app --reload --port 8420
 
 Then open `http://127.0.0.1:8420`.
 
+## Logging in
+
+Each person needs their own login before they can reach the dashboard or its
+data endpoints. This is a lightweight, homegrown login (salted/hashed
+passwords in `backend/users.json`, a signed session cookie) meant as a stopgap
+until real SSO (Azure AD/Okta/Google, mapped to Salesforce users) replaces it —
+see the requirements doc's SSO section. Nothing about the frontend depends on
+which one is behind it.
+
+Add a user (prompts for a password, never pass it as a command-line argument):
+
+```
+cd backend
+python manage_users.py add jren --name "Jen" --csm "Jen's Salesforce Owner.Name" --role csm
+```
+
+- `--csm` should match the person's `Owner.Name` in Salesforce/mock data so their
+  "View as" scope defaults to their own book on login (leave it off for
+  managers/admins who cover multiple books).
+- `--role` is `csm` (default), `manager`, or `admin` — stored for future use, doesn't
+  gate anything yet.
+- `python manage_users.py list` / `remove <username>` manage existing users.
+
+Set `SESSION_SECRET` in `backend/.env` (see `.env.example` for how to generate one)
+so logins survive a server restart — without it, everyone's logged out each time
+the backend restarts.
+
+Each user's CTAs/plans/notes/etc. are namespaced separately in `localStorage` by
+username, so teammates sharing a machine won't see each other's data.
+
 ## Sharing it with a teammate on your network
 
 Easiest option if a teammate can clone this repo themselves: they just run

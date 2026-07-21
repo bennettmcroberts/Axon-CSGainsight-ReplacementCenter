@@ -6,14 +6,17 @@ reading mock data or live Salesforce data.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
+from .auth import public_user, verify_user
 from .config import settings
 from .mock_engine import run_mock_query
 from .salesforce_client import SalesforceUnavailable, run_salesforce_create, run_salesforce_query
@@ -34,6 +37,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Lightweight login sessions (see app/auth.py) - a stopgap before real SSO.
+# Signed, HttpOnly cookie; nothing server-side to persist beyond users.json.
+app.add_middleware(SessionMiddleware, secret_key=settings.session_secret, same_site="lax", max_age=60 * 60 * 24 * 14)
 
 
 class SoqlRequest(BaseModel):
@@ -43,6 +49,64 @@ class SoqlRequest(BaseModel):
 class WriteRequest(BaseModel):
     sobject: str
     fields: dict
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def require_auth(request: Request) -> dict:
+    if not request.session.get("username"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {
+        "username": request.session["username"],
+        "displayName": request.session.get("display_name"),
+        "csmName": request.session.get("csm_name"),
+        "role": request.session.get("role", "csm"),
+    }
+
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest, request: Request):
+    user = verify_user(body.username, body.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    pub = public_user(user)
+    request.session["username"] = pub["username"]
+    request.session["display_name"] = pub["displayName"]
+    request.session["csm_name"] = pub["csmName"]
+    request.session["role"] = pub["role"]
+    return pub
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(require_auth)):
+    return user
+
+
+def render_app_shell(path: Path, request: Request):
+    """Serves an app shell HTML file, gated by session, with the logged-in
+    user's identity injected before app.js loads (so per-user localStorage
+    namespacing has a username to key off of from the very first line)."""
+    if not request.session.get("username"):
+        next_path = request.url.path
+        return RedirectResponse(url=f"/login?next={next_path}", status_code=307)
+    user_json = json.dumps({
+        "username": request.session["username"],
+        "displayName": request.session.get("display_name"),
+        "csmName": request.session.get("csm_name"),
+        "role": request.session.get("role", "csm"),
+    })
+    html = path.read_text()
+    html = html.replace("<!--AUTH_USER-->", f"<script>window.CURRENT_USER={user_json};</script>")
+    return HTMLResponse(html)
 
 
 @app.get("/api/health")
@@ -56,7 +120,7 @@ def health():
 
 
 @app.post("/api/soql")
-def soql(body: SoqlRequest):
+def soql(body: SoqlRequest, user: dict = Depends(require_auth)):
     query = (body.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="Missing query")
@@ -76,7 +140,7 @@ def soql(body: SoqlRequest):
 
 
 @app.post("/api/write")
-def write_record(body: WriteRequest):
+def write_record(body: WriteRequest, user: dict = Depends(require_auth)):
     """Write-back for CSM-logged activity (calls/emails/meetings) so it lands in
     Salesforce instead of staying stranded in this app's localStorage.
 
@@ -112,6 +176,15 @@ if FRONTEND_UI_DIR.exists():
     def index():
         return FileResponse(FRONTEND_UI_DIR / "index.html")
 
+    @app.get("/login")
+    @app.get("/login.html")
+    def login_page():
+        return FileResponse(FRONTEND_UI_DIR / "login.html")
+
+    @app.get("/app.html")
+    def app_shell(request: Request):
+        return render_app_shell(FRONTEND_UI_DIR / "app.html", request)
+
     # Old /axon bookmarks → primary UI
     @app.get("/axon")
     @app.get("/axon/")
@@ -128,6 +201,10 @@ if FRONTEND_CLASSIC_DIR.exists():
     @app.get("/classic/")
     def classic_index():
         return FileResponse(FRONTEND_CLASSIC_DIR / "index.html")
+
+    @app.get("/classic/app.html")
+    def classic_app_shell(request: Request):
+        return render_app_shell(FRONTEND_CLASSIC_DIR / "app.html", request)
 
     @app.get("/classic/{filename}")
     def classic_file(filename: str):

@@ -14,9 +14,15 @@ function prodName(f){ if(f==null||f==='') return 'Uncategorized'; if(PRODMAP[f])
 function daysSince(d){ if(!d) return null; return Math.round((new Date()-new Date(d))/86400000); }
 
 // ---------- persisted settings ----------
+// Namespaced per logged-in user (window.CURRENT_USER, injected server-side before
+// this script loads - see render_app_shell in backend/app/main.py) so teammates
+// sharing a machine don't clobber each other's CTAs/plans/notes. This is the one
+// line that changes when this moves to real backend storage later: swap the
+// localStorage calls below for API calls, keep every LS.get/LS.set call site as-is.
+function _lsKey(k){ const u=(window.CURRENT_USER&&window.CURRENT_USER.username)||'shared'; return 'axoncs_'+u+'_'+k; }
 const LS = {
-  get(k,d){try{const v=localStorage.getItem('axoncs_'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},
-  set(k,v){try{localStorage.setItem('axoncs_'+k,JSON.stringify(v))}catch(e){}}
+  get(k,d){try{const v=localStorage.getItem(_lsKey(k));return v==null?d:JSON.parse(v)}catch(e){return d}},
+  set(k,v){try{localStorage.setItem(_lsKey(k),JSON.stringify(v))}catch(e){}}
 };
 const DEFAULT_WEIGHTS={openCase:2,highSev:9,proxNear:22,proxMid:10,stageRisk:12,engage:16};
 let WEIGHTS = Object.assign({}, DEFAULT_WEIGHTS, LS.get('weights',{}));
@@ -26,7 +32,7 @@ let plans = LS.get('plans',{});           // acctId -> plan object
 function savePlans(){ LS.set('plans',plans); }
 let ctas = LS.get('ctas',[]);             // Calls to Action (action items for CSMs)
 function saveCtas(){ LS.set('ctas',ctas); }
-let ownerFilter = '';                     // "View as CSM" auto-filter (owner name), session only
+let ownerFilter = (window.CURRENT_USER && window.CURRENT_USER.role==='csm' && window.CURRENT_USER.csmName) || ''; // "View as CSM" auto-filter (owner name), session only — defaults to the logged-in CSM's own book
 let hierFilter = {segment:'', managers:[]}; // Org Drill-down: segment + a chosen set of managers, session only
 let tapState = LS.get('tapState',{});     // acctId -> {steps:[{id,label,done}], notes:'', refreshedAt}
 function saveTapState(){ LS.set('tapState',tapState); }
@@ -314,9 +320,11 @@ function segmentPill(a){ return `<span class="pill p-gray" style="text-transform
 // a real Salesforce org. The backend (mock or live Salesforce) always answers with
 // the same {records:[...]} shape, so nothing below this function needs to know or
 // care which data source is actually serving it.
+function goToLogin(){ window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname); }
 async function soql(q,retry=2){
   try{
     const res = await fetch('/api/soql',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
+    if(res.status===401){ goToLogin(); throw new Error('Session expired — redirecting to sign in.'); }
     if(!res.ok){
       let detail = 'Backend error '+res.status;
       try{ const body = await res.json(); if(body && body.detail) detail = body.detail; }catch(e){}
@@ -335,9 +343,14 @@ function sfDate(d){return d.toISOString().slice(0,10);}
 async function sfWrite(sobject,fields){
   try{
     const res=await fetch('/api/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sobject,fields})});
+    if(res.status===401){ goToLogin(); return {written:false,error:'Session expired.'}; }
     if(!res.ok){ let detail='Backend error '+res.status; try{ const b=await res.json(); if(b&&b.detail) detail=b.detail; }catch(e){} return {written:false,error:detail}; }
     return await res.json();
   }catch(e){ return {written:false,error:String((e&&e.message)||e)}; }
+}
+async function doLogout(){
+  try{ await fetch('/api/auth/logout',{method:'POST'}); }catch(e){}
+  window.location.href = '/login';
 }
 
 // ---------- state ----------
@@ -3017,6 +3030,14 @@ function boot(){
   });
 }
 window.boot=boot; window.restart=restart;
+
+(function(){
+  const who=$('#whoami');
+  if(who && window.CURRENT_USER){
+    const u=window.CURRENT_USER;
+    who.textContent=(u.displayName||u.username)+(u.role&&u.role!=='csm'?' · '+u.role:'');
+  }
+})();
 
 document.querySelectorAll('#tabs button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWeights,resetWeights,filterTable,toggleComm,addEscNote,setTab,
