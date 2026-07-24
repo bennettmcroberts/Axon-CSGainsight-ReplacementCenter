@@ -3,4 +3,7 @@ __pycache__/
 *.pyc
 backend/.env
 backend/users.json
+backend/google_credentials.json
+backend/gmail_client_secret.json
+backend/gmail_token.json
 .DS_Store

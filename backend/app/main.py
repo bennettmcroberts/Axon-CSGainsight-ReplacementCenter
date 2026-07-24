@@ -20,6 +20,8 @@ from .auth import public_user, verify_user
 from .config import settings
 from .mock_engine import run_mock_query
 from .salesforce_client import SalesforceUnavailable, run_salesforce_create, run_salesforce_query
+from .sheets_client import SheetsUnavailable, fetch_survey_responses
+from .gmail_client import GmailUnavailable, gmail_configured, send_email
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 # Shared JS, Resource Library pages, and other static assets live under frontend/.
@@ -54,6 +56,12 @@ class WriteRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class AutomationSendRequest(BaseModel):
+    to: str
+    subject: str
+    bodyHtml: str
 
 
 def require_auth(request: Request) -> dict:
@@ -166,6 +174,47 @@ def write_record(body: WriteRequest, user: dict = Depends(require_auth)):
         raise HTTPException(status_code=502, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Write failed: {e}") from e
+
+
+@app.get("/api/survey/responses")
+def survey_responses(user: dict = Depends(require_auth)):
+    """Real (non-mock) NPS/CSAT survey responses, read live from the Google Form's
+    linked Sheet via a service account - see backend/app/sheets_client.py. This is
+    a separate, small pilot data source (10 hand-picked demo accounts), not routed
+    through the mock/Salesforce SOQL passthrough since it isn't a Salesforce object.
+    """
+    if not settings.google_sheets_configured:
+        return {"records": [], "configured": False}
+    try:
+        records = fetch_survey_responses()
+    except SheetsUnavailable as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Sheet read failed: {e}") from e
+    return {"records": records, "configured": True}
+
+
+@app.post("/api/automation/send")
+def automation_send(body: AutomationSendRequest, user: dict = Depends(require_auth)):
+    """Demo send for the Automation Batch feature - fires one real email through
+    the axongainsightrp@gmail.com account (see backend/gmail_client.py) so the
+    Automation Settings / Escalation Automations bubbles can show a genuine sent
+    confirmation instead of a faked one. Scheduling itself is not automated yet;
+    this is manually triggered from the frontend when a bubble's configured date
+    is reached (or immediately, for demo purposes).
+    """
+    if not gmail_configured():
+        raise HTTPException(status_code=503, detail="Gmail not configured - run backend/gmail_auth.py once.")
+    try:
+        message_id = send_email(body.to, body.subject, body.bodyHtml)
+    except GmailUnavailable as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"sent": True, "messageId": message_id}
+
+
+@app.get("/api/automation/status")
+def automation_status(user: dict = Depends(require_auth)):
+    return {"configured": gmail_configured()}
 
 
 if FRONTEND_ASSETS_DIR.exists():

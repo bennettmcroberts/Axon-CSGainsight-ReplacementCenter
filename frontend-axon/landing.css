@@ -7,7 +7,7 @@
 .landing-logo{display:inline-flex;align-items:center;gap:12px}
 .landing-logo-mark{width:38px;height:38px;color:var(--yellow,#ffe600)}
 .landing-logo-text{
-  font-family:"Barlow Condensed","IBM Plex Sans",sans-serif;font-weight:700;letter-spacing:.2em;
+  font-family:var(--font-ui);font-weight:700;letter-spacing:.2em;
   font-size:42px;color:var(--ink,#000);line-height:1;
 }
 .landing-eyebrow{
@@ -15,7 +15,7 @@
   margin-top:36px;background:var(--yellow,#ffe600);padding:4px 10px;
 }
 .landing-title{
-  font-family:"Barlow Condensed","IBM Plex Sans",sans-serif;font-weight:700;letter-spacing:.04em;
+  font-family:var(--font-ui);font-weight:700;letter-spacing:.04em;
   font-size:64px;line-height:0.95;margin:14px 0 8px;color:var(--ink,#000);text-transform:uppercase;
 }
 .landing-tag{

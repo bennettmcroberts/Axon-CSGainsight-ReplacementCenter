@@ -56,6 +56,75 @@ function insightCountSince(acctId,days){ const arr=insights[acctId]||[]; if(days
 let surveyState = LS.get('surveyState',{}); // acctId -> [{id,quarter,sentAt,status,score,notes}]
 function saveSurveyState(){ LS.set('surveyState',surveyState); }
 function currentQuarter(d){ d=d||new Date(); return d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1); }
+// ---- Quarter split: mock book = Q2, live Test 10 pilot = this quarter (Q3 today) ----
+// Date-driven throughout: quarterKeyForDate buckets any timestamp into "YYYY-Qn",
+// and every quarter-aware view (CSAT, Customer Insights, Managed NPS) filters by
+// this same key so switching quarters is consistent everywhere.
+function quarterKeyForDate(d){ return currentQuarter(d instanceof Date ? d : new Date(d)); }
+function shiftQuarter(qKey,delta){
+  let [y,q]=qKey.split('-Q'); y=+y; q=+q+delta;
+  while(q<1){ q+=4; y--; } while(q>4){ q-=4; y++; }
+  return y+'-Q'+q;
+}
+const PILOT_QUARTER=currentQuarter();      // this quarter — where the live Sheet pilot lives
+const MOCK_QUARTER=shiftQuarter(PILOT_QUARTER,-1); // prior quarter — where the seeded full-book mock data lives
+// A real calendar date inside the given quarter (not "today"), so anything
+// date-filtered (Customer Insights, quarter buckets) actually lands in that
+// quarter instead of just carrying a matching label while the real timestamp
+// says otherwise.
+function randomDateInQuarter(qKey,rnd){
+  const [y,q]=qKey.split('-Q').map(Number);
+  const startMonth=(q-1)*3;
+  const start=new Date(y,startMonth,1).getTime();
+  const end=new Date(y,startMonth+3,1).getTime();
+  return new Date(start+rnd()*(end-start));
+}
+// Deterministically seeds every account with a Q2-quarter CSAT send/receive
+// status (if it doesn't already have one), so the "before the pilot" view has
+// real, populated numbers instead of mostly zeros. Runs once at load.
+function seedMockCsatQuarter(){
+  // Purge any seeded mock entries that ended up tagged with the *live* quarter
+  // (an artifact of the quarter constants having been swapped back and forth
+  // during testing) — Q3/PILOT_QUARTER must only ever hold real Sheet-backed
+  // data, never seeded placeholders. Entries from before the `seeded` flag
+  // existed are caught by the fallback: no real notes = not a genuine
+  // CSM-entered survey response.
+  Object.values(surveyState).forEach(arr=>{
+    for(let i=arr.length-1;i>=0;i--){
+      const s=arr[i];
+      if(s.quarter===PILOT_QUARTER && (s.seeded || !s.notes || !s.notes.trim())) arr.splice(i,1);
+    }
+  });
+  const rnd=mulberry32(9001);
+  STATE.accounts.forEach(a=>{
+    const arr=surveyState[a.id]=surveyState[a.id]||[];
+    const existing=arr.find(s=>s.quarter===MOCK_QUARTER);
+    // Repair entries from before the sentAt/quarter mismatch fix — a Q2-labeled
+    // entry whose real date doesn't fall in Q2 gets dropped and reseeded below.
+    if(existing){
+      if(!existing.sentAt || quarterKeyForDate(existing.sentAt)===MOCK_QUARTER) return;
+      arr.splice(arr.indexOf(existing),1);
+    }
+    const r=rnd();
+    const status = r<0.08?'Not sent' : r<0.22?'Sent' : 'Completed';
+    arr.push({id:cid(),quarter:MOCK_QUARTER,seeded:true,sentAt:status!=='Not sent'?randomDateInQuarter(MOCK_QUARTER,rnd).toISOString():null,status,score:status==='Completed'?Math.floor(rnd()*101):null,notes:''});
+  });
+  saveSurveyState();
+}
+// Generic quarter-toggle bar + date-based row filter, reused by CSAT (Test 10),
+// Customer Insights, and Managed-Account NPS so the three stay consistent.
+function quarterToggleHtml(sel,setYearFn,setQFn,extraYears){
+  const years=[...new Set([+MOCK_QUARTER.split('-Q')[0],+PILOT_QUARTER.split('-Q')[0],sel.year,...(extraYears||[])])].sort((a,b)=>b-a);
+  return `<div class="row-actions" style="margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <label class="mini">Year
+      <select class="select sm" style="display:block;margin-top:4px" onchange="${setYearFn}(this.value)">${years.map(y=>`<option value="${y}"${sel.year===y?' selected':''}>${y}</option>`).join('')}</select>
+    </label>
+    <div class="row-actions" style="gap:6px">
+      ${[1,2,3,4].map(q=>`<button type="button" class="btn sm${sel.q===q?' primary':''}" onclick="${setQFn}(${q})">Q${q}${(sel.year+'-Q'+q)===PILOT_QUARTER?' · live':(sel.year+'-Q'+q)===MOCK_QUARTER?' · pre-pilot':''}</button>`).join('')}
+    </div>
+  </div>`;
+}
+function quarterKeyOf(sel){ return sel.year+'-Q'+sel.q; }
 function surveysFor(acctId){ return surveyState[acctId]||[]; }
 function currentSurvey(acctId){ const q=currentQuarter(); return surveysFor(acctId).find(s=>s.quarter===q); }
 function ensureCurrentSurvey(acctId){
@@ -155,8 +224,7 @@ async function syncActivityToSalesforce(acctId,entry){
   entry.sfDetail = res.detail || res.error || '';
   saveAcctActivity();
   delete commsCache[acctId];
-  const sheet=$('#sheet');
-  if(sheet && sheet.dataset.acctId===acctId && $('#overlay') && $('#overlay').classList.contains('show')) openAcct(acctId);
+  if(currentAcctView===acctId) openAcct(acctId);
 }
 function logActivity(acctId){
   const type=($('#actType')&&$('#actType').value)||'Call';
@@ -216,7 +284,7 @@ function delTeamMember(acctId,side,mid){
 function teamSideList(acctId,side,members){
   const inputRole=`tr_${side}_role_${acctId}`, inputName=`tr_${side}_name_${acctId}`, inputEmail=`tr_${side}_email_${acctId}`;
   const addFn=`addTeamMember('${acctId}','${side}',document.getElementById('${inputRole}').value,document.getElementById('${inputName}').value,document.getElementById('${inputEmail}').value)`;
-  return `${members.length?`<div class="reslist">${members.map(m=>`<div class="resrow"><span><span class="pill p-blue" style="margin-right:8px">${esc(m.role)}</span><b>${esc(m.name)}</b>${m.email?`<span class="mini" style="margin-left:8px">${esc(m.email)}</span>`:''}</span><button class="btn sm" onclick="delTeamMember('${acctId}','${side}','${m.id}')">✕</button></div>`).join('')}</div>`:'<p class="mini">Nobody documented yet.</p>'}
+  return `${members.length?`<div class="reslist">${members.map(m=>`<div class="resrow"><span style="display:inline-flex;align-items:center;gap:8px">${avatarChip(m.name)}<span class="pill p-blue">${esc(m.role)}</span><b>${esc(m.name)}</b>${m.email?`<span class="mini">${esc(m.email)}</span>`:''}</span><button class="btn sm" onclick="delTeamMember('${acctId}','${side}','${m.id}')">✕</button></div>`).join('')}</div>`:'<p class="mini">Nobody documented yet.</p>'}
   <div class="row-actions" style="margin-top:10px;flex-wrap:wrap">
     <input id="${inputRole}" placeholder="${side==='axon'?'Role (CSM, TAM…)':'Role (Chief, IT Admin…)'}" style="flex:1;min-width:110px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
     <input id="${inputName}" placeholder="Name" style="flex:1;min-width:110px;border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
@@ -356,6 +424,8 @@ async function doLogout(){
 // ---------- state ----------
 let STATE = { accounts:[], users:{}, tree:null, nodeIndex:{}, scope:'ROOT', tab:'home' };
 let charts = {};
+let acctCharts = {};
+let currentAcctView = null;
 let commsCache = {};
 let intelCache = {};
 
@@ -582,7 +652,7 @@ function scoreAccount(a){
   a.riskARR = a.renewalAmount*(100-score)/100;
   return a;
 }
-function computeAll(){ STATE.accounts.forEach(a=>{ syncLastActFromActivity(a.id); scoreAccount(a); }); refreshCsat(); rebuildEsc(); }
+function computeAll(){ STATE.accounts.forEach(a=>{ syncLastActFromActivity(a.id); scoreAccount(a); }); refreshCsat(); rebuildEsc(); seedMockCsatQuarter(); }
 
 // ---------- account tiering beyond size ----------
 // Segment (Strategic/Enterprise/Mid-Market/SMB) is purely a size tier (renewal $).
@@ -666,8 +736,7 @@ function rebuildEsc(){
       return {acctId:a.id, acct:a, sev, issue, status:st.status, log:st.log, reasonCode:st.reasonCode, product:st.product, steps:st.steps, daysOpen};
     })
     .sort((x,y)=> (sevRank(y.sev)-sevRank(x.sev)) || (y.acct.riskARR-x.acct.riskARR));
-  const open = STATE.escList.filter(e=>e.status!=='Resolved').length;
-  $('#escBadge').textContent = open;
+  STATE.escOpenCount = STATE.escList.filter(e=>e.status!=='Resolved').length;
 }
 function sevRank(s){return {Critical:4,High:3,Medium:2,Low:1}[s]||0;}
 function setEscStatus(acctId,status){
@@ -726,10 +795,752 @@ function crumbPath(nodeId){
 }
 
 // ---------- shared cells ----------
-const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',renewals:'Renewals',tap:'TAP Refreshes',scorecard:'CSM Scorecard',usage:'Usage & Adoption',ctas:'CTAs',escalations:'Escalations',casewatch:'Case Watch',engagement:'Engagement',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Health Model',resources:'Resource Library',execreport:'Executive Report'};
+const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',renewals:'Renewals & Contract Value',tap:'TAP Refreshes',scorecard:'CSM Scorecard',usage:'Usage & Adoption',ctas:'CTAs',escalations:'Escalations',casewatch:'Case Watch',engagement:'Engagement Cadence',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Configurable Health Model',resources:'Resource Library',execreport:'Executive Report',
+  gong:'Meeting Notes / Gong Intelligence',acctoutcomes:'Account Outcomes',prodoutcomes:'Product Outcomes',
+  npsmanaged:'Managed-Account NPS',npsagency:'Agency NPS',csat:'NPS & CSAT Management',insights:'Customer Insights',
+  acctscorecard:'Account Scorecard',prodscorecard:'Product Scorecard',integrations:'Integrations & Data Sources'};
+
+// ---------- nav: icon rail + category flyout ----------
+// Categories group the 28 tabs into 8 icons. A category with a single tab
+// navigates straight there on click; a category with multiple tabs opens a
+// pinned flyout of its sub-items to the right of the rail (stays open across
+// selections, like VS Code's activity bar + sidebar) instead of collapsing
+// after each pick.
+const NAV_CATEGORIES=[
+  {id:'home',label:'Home',icon:'<path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-5H10v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/>',tabs:['home']},
+  {id:'cockpit',label:'My Book',icon:'<path d="M12 6C10 4.3 6.8 3.8 3.5 4.3v13.8c3.3-.5 6.5 0 8.5 1.7 2-1.7 5.2-2.2 8.5-1.7V4.3C17.2 3.8 14 4.3 12 6Z"/><path d="M12 6v13.8"/>',tabs:['overview','worklist','hierarchy']},
+  {id:'pulse',label:'Customer Pulse',icon:'<path d="M3 12h4l2-7 4 14 2-7h6"/>',tabs:['npsagency','npsmanaged','csat','insights']},
+  {id:'risk',label:'Accounts & Risk',icon:'<path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3Z"/><path d="M12 8v5M12 16h.01"/>',tabs:['renewals','tap','casewatch','escalations']},
+  {id:'engagement',label:'Engagement',icon:'<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',tabs:['engagement','ctas','emails','gong']},
+  {id:'journey',label:'Customer Success Journey',icon:'<path d="M6 3v18"/><path d="M6 5h12l-3 4 3 4H6"/>',tabs:['plans','acctoutcomes','prodoutcomes','usage']},
+  {id:'performance',label:'Performance',icon:'<path d="M4 20h16M7 20V10m5 10V4m5 16v-7"/>',tabs:['scorecard','acctscorecard','prodscorecard','execreport','model']},
+  {id:'resources',label:'Resources',icon:'<path d="M4 5a2 2 0 0 1 2-2h6v18H6a2 2 0 0 1-2-2Z"/><path d="M20 5a2 2 0 0 0-2-2h-6v18h6a2 2 0 0 0 2-2Z"/>',tabs:['resources','integrations']},
+];
+function categoryForTab(tab){ return NAV_CATEGORIES.find(c=>c.tabs.includes(tab)) || NAV_CATEGORIES[0]; }
+let navOpenCat = categoryForTab(STATE.tab).id;
+function renderNav(){
+  const rail=$('#iconRail'), fly=$('#flyout'); if(!rail) return;
+  const activeCat=navOpenCat||categoryForTab(STATE.tab).id;
+  rail.innerHTML=NAV_CATEGORIES.map(c=>`<button class="rail-btn${activeCat===c.id?' active':''}" data-cat="${c.id}" title="${esc(c.label)}"><svg class="ic" viewBox="0 0 24 24">${c.icon}</svg></button>`).join('');
+  rail.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>onRailClick(b.dataset.cat)));
+  renderFlyout();
+}
+function onRailClick(catId){
+  const cat=NAV_CATEGORIES.find(c=>c.id===catId);
+  if(cat.tabs.length===1){ setTab(cat.tabs[0]); return; }
+  if(navOpenCat===catId){ navOpenCat=null; renderNav(); return; }
+  // Opening a category jumps straight to its first sub-item instead of just
+  // revealing the flyout with nothing selected — clicking the icon should
+  // always do something to the page, not just show a list.
+  setTab(cat.tabs[0]);
+}
+function renderFlyout(){
+  const fly=$('#flyout'); if(!fly) return;
+  const cat=NAV_CATEGORIES.find(c=>c.id===navOpenCat);
+  if(!cat || cat.tabs.length<=1){ fly.classList.add('hidden'); fly.innerHTML=''; document.body.classList.remove('flyout-open'); return; }
+  document.body.classList.add('flyout-open');
+  fly.classList.remove('hidden');
+  fly.innerHTML=`
+    <div class="flyout-top">
+      <span class="flyout-h">${esc(cat.label)}</span>
+      <button type="button" class="flyout-collapse" id="flyoutCollapse" title="Collapse">&laquo;</button>
+    </div>
+    <input type="text" class="flyout-search" id="flyoutSearch" placeholder="Search…" autocomplete="off">
+    <div class="flyout-list" id="flyoutList"></div>`;
+  $('#flyoutCollapse').addEventListener('click',()=>{ navOpenCat=null; renderNav(); });
+  $('#flyoutSearch').addEventListener('input',e=>renderFlyoutList(cat,e.target.value));
+  renderFlyoutList(cat,'');
+}
+// Rebuilds only the item list (not the search input itself) on each keystroke,
+// so typing doesn't blow away cursor position/focus the way a full re-render would.
+function renderFlyoutList(cat,q){
+  const list=$('#flyoutList'); if(!list) return;
+  const qq=(q||'').toLowerCase();
+  const items=cat.tabs.filter(t=>!qq||(TAB_LABELS[t]||t).toLowerCase().includes(qq));
+  list.innerHTML = items.length
+    ? items.map(t=>`<button class="flyout-btn${STATE.tab===t?' active':''}" data-tab="${t}"><span class="flabel">${esc(TAB_LABELS[t]||t)}</span><span class="b" data-badge="${t}"></span></button>`).join('')
+    : `<div class="mini" style="padding:8px 10px">No matches</div>`;
+  list.querySelectorAll('button[data-tab]').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
+  applyBadges();
+}
+function scaffoldView(title,hint,bullets){
+  return `<div class="card"><h3>${esc(title)} <span class="hint">${esc(hint)}</span></h3>
+  <p class="mini" style="line-height:1.7">Planned addition — not yet wired to live data. Requirements captured for this view:</p>
+  <ul style="margin:8px 0 0;padding-left:18px;line-height:1.8">${bullets.map(b=>`<li>${esc(b)}</li>`).join('')}</ul>
+  </div>`;
+}
+function viewGong(){ return scaffoldView('Meeting Notes / Gong Intelligence','call intelligence and note-taking, including Axon-specific terminology',[
+  'Gong-sourced call notes and highlights surfaced per account','Support for Axon-specific terminology (e.g. ALPR) in transcription/tagging','Tie into Engagement cadence so a Gong-logged call counts toward cadence tracking']); }
+function viewAcctOutcomes(){ return scaffoldView('Account Outcomes','goal and outcome tracking at the account level',[
+  'Account-level goals distinct from product-level goals','Progress toward outcomes, not just milestone completion','Feeds the Account Scorecard under Performance']); }
+function viewProdOutcomes(){ return scaffoldView('Product Outcomes','goal and outcome tracking at the product level',[
+  'Per-product goals and health, independent of overall account health','An account can be green overall while one product line (e.g. Fusus) is red','Feeds the Product Scorecard under Performance']); }
+// ---- NPS (Managed-Account & Agency) ----
+// Two independent populations per Rui's requirement: Managed-Account NPS is the
+// real per-account NPS already modeled on STATE.accounts; Agency NPS simulates
+// the broader, larger agency-wide population (multiple divisions per customer,
+// not just the primary contact a CSM talks to) — built from the same accounts
+// so it stays grounded in real mock entities rather than inventing new ones.
+// Kudos is intentionally omitted per instruction; this focuses on what's
+// driving scores below 9 so a CSM knows exactly what to act on.
+function mulberry32(seed){ return function(){ seed|=0; seed=seed+0x6D2B79F5|0; let t=Math.imul(seed^seed>>>15,1|seed); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+const NPS_CATS=['Pricing & Contract Value','Product Reliability','Support Responsiveness','Missing Features','Onboarding & Training','Account Communication','Hardware / TAP Issues','Integration & Technical'];
+const NPS_COMMENTS={
+  'Pricing & Contract Value':["Renewal pricing increased more than we expected for the value delivered.","Contract terms feel rigid compared to alternatives we've evaluated.","Budget approval is getting harder to justify at this price point."],
+  'Product Reliability':["We've had recurring stability issues during peak usage.","Too many bugs have surfaced since the last release.","Performance has degraded noticeably over the past few months."],
+  'Support Responsiveness':["Support tickets take too long to get a first response.","Had to escalate multiple times before getting traction.","First-contact resolution has been inconsistent."],
+  'Missing Features':["Reporting doesn't cover what our command staff actually needs.","We've requested key functionality multiple times without movement.","Feature parity with competitors is lacking in a few critical areas."],
+  'Onboarding & Training':["New hires aren't getting ramped up fast enough on the platform.","Initial rollout training didn't cover enough real-world scenarios.","We need more refresher training resources for existing users."],
+  'Account Communication':["We don't hear from our CSM often enough to feel supported.","Nobody proactively flagged the renewal timeline to us.","Turnover on the account team has hurt continuity."],
+  'Hardware / TAP Issues':["The hardware refresh process has been slower than expected.","Device reliability in the field has been inconsistent.","RMA turnaround time needs improvement."],
+  'Integration & Technical':["Integration with our records system keeps breaking.","API reliability has been a recurring headache for our IT team.","Single sign-on has caused repeated login issues."]
+};
+let npsDatasets={};
+const AXON_DESCRIPTIONS=['Strategic Partner','Supplier','Vendor'];
+const RELATIONSHIP_INTENTS=['Grow','Stay the same','Decline'];
+function pickDescription(rnd,score){
+  const r=rnd();
+  if(score>=9) return r<0.64?'Strategic Partner':r<0.94?'Vendor':'Supplier';
+  if(score>=7) return r<0.45?'Strategic Partner':r<0.85?'Vendor':'Supplier';
+  return r<0.2?'Strategic Partner':r<0.6?'Vendor':'Supplier';
+}
+function pickRelationshipIntent(rnd,score){
+  const r=rnd();
+  if(score>=9) return r<0.88?'Grow':'Stay the same';
+  if(score>=7) return r<0.6?'Grow':r<0.97?'Stay the same':'Decline';
+  return r<0.25?'Grow':r<0.85?'Stay the same':'Decline';
+}
+function getNpsDataset(kind){
+  if(npsDatasets[kind]) return npsDatasets[kind];
+  const rnd=mulberry32(kind==='managed'?1337:7331);
+  const pick=(arr)=>arr[Math.floor(rnd()*arr.length)];
+  let rows=[];
+  if(kind==='managed'){
+    rows=STATE.accounts.filter(a=>a.nps!=null).map(a=>({id:a.id,label:a.name,owner:a.ownerName,score:a.nps,date:a.npsDate||''}));
+  }else{
+    const roles=['Patrol Operations','Records & Evidence','IT / Systems','Command Staff','Training Division'];
+    STATE.accounts.forEach(a=>{
+      const n=1+Math.floor(rnd()*3);
+      for(let i=0;i<n;i++){
+        const base=a.nps!=null?a.nps:6;
+        const score=Math.max(0,Math.min(10,Math.round(base+Math.round((rnd()-0.5)*6))));
+        rows.push({id:a.id,label:a.name+' — '+pick(roles),owner:a.ownerName,score,date:a.npsDate||''});
+      }
+    });
+  }
+  rows.forEach(r=>{
+    if(r.score<=9){ r.category=pick(NPS_CATS); r.comment=pick(NPS_COMMENTS[r.category]); }
+    r.description=pickDescription(rnd,r.score);
+    r.relationshipIntent=pickRelationshipIntent(rnd,r.score);
+    Object.assign(r,maybeCsatComplaint(rnd,r.score));
+  });
+  npsDatasets[kind]={rows,promoters:rows.filter(r=>r.score>9),detractors:rows.filter(r=>r.score<=9)};
+  return npsDatasets[kind];
+}
+// CSAT is a real 1-10 satisfaction score (the form's "CSAT CSM" question is a
+// misleading label for it) plus a free-text comment — feedback about the
+// account's real assigned CSM, which we already know via r.owner, so there's
+// no separate "who" field needed.
+const CSM_COMPLAINT_COMMENTS=["Feels like we're an afterthought — hard to get a response.","Turnover on our account team has made this relationship inconsistent.","Follow-through on commitments has been inconsistent.","We've had to escalate more than we should have to get attention.","Communication has been reactive instead of proactive."];
+function maybeCsatComplaint(rnd,score){
+  const p=score<=6?0.35:score<=8?0.12:0.03;
+  if(rnd()>=p) return {csatScore:null,csatComments:''};
+  const csatScore=Math.max(0,Math.min(10,score+Math.round((rnd()-0.5)*3)));
+  return {csatScore,csatComments:CSM_COMPLAINT_COMMENTS[Math.floor(rnd()*CSM_COMPLAINT_COMMENTS.length)]};
+}
+function categoryCounts(rows,field){
+  const counts={};
+  rows.forEach(r=>{ const v=r[field]; if(!v) return; counts[v]=(counts[v]||0)+1; });
+  return Object.entries(counts).map(([k,n])=>({k,n}));
+}
+function npsCategoryCounts(detractors){
+  const counts={};
+  detractors.forEach(d=>{ counts[d.category]=(counts[d.category]||0)+1; });
+  return Object.entries(counts).map(([cat,n])=>({cat,n})).sort((a,b)=>b.n-a.n);
+}
+function npsSlug(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,''); }
+function scrollToNpsDriver(kind,cat){
+  const el=document.getElementById('npsdrv-'+kind+'-'+npsSlug(cat));
+  if(el){ el.open=true; el.scrollIntoView({behavior:'smooth',block:'start'}); }
+}
+function scrollToCsmDriver(kind,csm){
+  const el=document.getElementById('csmdrv-'+kind+'-'+npsSlug(csm));
+  if(el){ el.open=true; el.scrollIntoView({behavior:'smooth',block:'start'}); }
+}
+function scrollToSection(id){ const el=document.getElementById(id); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
+function destroyChartKey(key){ if(charts[key]){ try{charts[key].destroy()}catch(e){} delete charts[key]; } }
+
+// ---- Test 10 (real Google Form pilot) ----
+// 10 hand-picked accounts (chosen for disparity in segment/contract value/NPS)
+// wired to a real Google Form -> Sheet, read via GET /api/survey/responses
+// (backend/app/sheets_client.py, service-account auth - see NOTES.md). Until a
+// real response lands for an account, that row is filled with seeded mock data
+// (same generator style as Agency NPS) so the views are demonstrable end to
+// end; each row is tagged source:'sheet' or source:'mock' so it's always
+// clear which is real. Manual refresh only (no auto-poll), per instruction.
+const TEST10_ACCOUNTS=['Springfield Fire & Rescue','Union City Correctional Facility','Zionsville Highway Patrol','Kingsley Fire & Rescue','Westgate Correctional Facility','Harborview Fire & Rescue','Georgetown Public Safety Dept.',"Jasper County Sheriff's Office",'Thornbury Highway Patrol','Lakewood Correctional Facility'];
+let sheetDataCache=null, sheetFetchError=null, sheetLastFetch=null;
+async function refreshSheetData(){
+  sheetFetchError=null;
+  try{
+    const res=await fetch('/api/survey/responses',{credentials:'same-origin'});
+    if(res.status===401){ goToLogin(); return; }
+    const data=await res.json();
+    if(data.configured===false){ sheetFetchError='Google Sheets isn’t configured on the backend yet (missing service account key).'; sheetDataCache=[]; }
+    else{ sheetDataCache=data.records||[]; }
+    sheetLastFetch=new Date();
+  }catch(e){ sheetFetchError='Could not reach the backend: '+(e.message||e); }
+  route();
+}
+
+// ---- Automation Batch (email automation demo) ----
+// Two configurable automations shown as connected bubbles: "Automation Settings"
+// (the recurring NPS/CSAT outreach schedule) and "Escalation Automations" (a
+// follow-up trigger relative to the first send). No real recipient list or
+// scheduler exists yet - clicking "Send now (demo)" fires one real email via
+// Gmail (backend/app/gmail_client.py) to axongainsightrp@gmail.com so the team
+// can see exactly what the automated message will look like end to end. A bubble
+// stays amber (configured, not yet sent) until it actually sends, then turns
+// green with an italic confirmation.
+let automationConfig=LS.get('automationConfig',{month:1,day:1,sentAt:null,sending:false});
+let escalationConfig=LS.get('escalationConfig',{days:15,sentAt:null,sending:false});
+let automationPanelOpen=null; // 'settings' | 'escalation' | null
+function saveAutomationConfig(){ LS.set('automationConfig',automationConfig); }
+function saveEscalationConfig(){ LS.set('escalationConfig',escalationConfig); }
+function toggleAutomationPanel(which){ automationPanelOpen=automationPanelOpen===which?null:which; route(); }
+function setAutomationMonth(v){ automationConfig.month=Math.min(3,Math.max(1,parseInt(v,10)||1)); automationConfig.sentAt=null; saveAutomationConfig(); }
+function setAutomationDay(v){ automationConfig.day=Math.min(31,Math.max(1,parseInt(v,10)||1)); automationConfig.sentAt=null; saveAutomationConfig(); }
+function setEscalationDays(v){ escalationConfig.days=Math.max(0,parseInt(v,10)||0); escalationConfig.sentAt=null; saveEscalationConfig(); }
+const ORDINAL=n=>({1:'1st',2:'2nd',3:'3rd'}[n]||n+'th');
+function automationScheduleLabel(){ return `${ORDINAL(automationConfig.month)} month of each quarter, day ${automationConfig.day}`; }
+function escalationScheduleLabel(){ return escalationConfig.days?`${escalationConfig.days} days after first email`:'No delay set yet'; }
+
+// Real Google Form used by the NPS/CSAT pilot (see NOTES.md / memory) - the
+// same survey link the automated outreach email points recipients to.
+const AUTOMATION_SURVEY_LINK='https://docs.google.com/forms/d/e/1FAIpQLSdNjXXb1-RgUeQ54LkG-UInfP0KLSGFMHomdnIUoiK_P0MGFw/viewform?usp=publish-editor';
+// Picks one real example (a live Test 10 respondent's contact name if one has
+// come in, otherwise the first account in the book) so the preview shows a
+// genuinely-resolved email rather than a raw template - "client name" is
+// whoever the account's actual contact/user is, not the agency name itself.
+function automationSampleContext(){
+  const real=(sheetDataCache||[]).find(r=>r.account && r.contactName);
+  if(real){ const a=STATE.accounts.find(x=>x.name===real.account); return {clientName:real.contactName,csmName:(a&&a.ownerName)||'the Axon team',acctName:real.account}; }
+  const a=(STATE.accounts||[])[0];
+  return {clientName:a?('the team at '+a.name):'Valued Customer',csmName:(a&&a.ownerName)||'the Axon team',acctName:a?a.name:'your organization'};
+}
+function automationEmailTemplate(which,sample){
+  if(which==='settings') return {
+    subject:'Axon Customer Survey — quick check-in',
+    bodyHtml:`<p>Dear ${esc(sample.clientName)},</p><p>I'm ${esc(sample.csmName)}, from Axon, and just wanted to check in on your experience with Axon products so far. It would be very helpful for us to better serve you with our Axon products and services if you fill out this survey: <a href="${AUTOMATION_SURVEY_LINK}">AXON Customer Survey</a></p><p>Thank you,<br>${esc(sample.csmName)}<br>Axon Customer Success</p>`
+  };
+  return {
+    subject:'Following up — Axon Customer Survey',
+    bodyHtml:`<p>Dear ${esc(sample.clientName)},</p><p>I'm ${esc(sample.csmName)}, from Axon. I wanted to follow up as we haven't yet heard back on the survey we sent over — your feedback genuinely helps us serve you better. If you have a couple of minutes, we'd appreciate you completing it here: <a href="${AUTOMATION_SURVEY_LINK}">AXON Customer Survey</a></p><p>Thank you,<br>${esc(sample.csmName)}<br>Axon Customer Success</p>`
+  };
+}
+// Circular "send" button: a ring traces clockwise starting at 6 o'clock: once
+// it laps back to 6, the button snaps to solid green with a checkmark that
+// fades out a moment later, leaving the green (the persisted "sent" state).
+function sendRingHtml(which){
+  return `<div class="send-fab-wrap">
+    <button type="button" class="send-fab" id="sendFab-${which}" onclick="confirmSendAutomation('${which}')">
+      <svg class="send-ring" viewBox="0 0 48 48"><circle class="send-ring-fg" id="sendRing-${which}" cx="24" cy="24" r="19"/></svg>
+      <svg class="send-icon-svg" viewBox="0 0 48 48">
+        <path class="send-icon-arrow" d="M20 16 L31 24 L20 32 Z"/>
+        <path class="send-icon-check" d="M16 24 L21.5 30 L33 17" fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <span class="mini">Preview shown above — click to send this exact email now (demo)</span>
+  </div>`;
+}
+function openAutomationPreview(which){
+  const sample=automationSampleContext();
+  const tpl=automationEmailTemplate(which,sample);
+  const sheet=$('#sheet');
+  sheet.innerHTML=`<div class="hd"><div><h2>${which==='settings'?'Automation Settings':'Escalation Automation'} — Email Preview</h2>
+    <div class="mini">{Agency Contact Name}: <b>${esc(sample.clientName)}</b> · Account: <b>${esc(sample.acctName)}</b> — in this demo the send always goes to <b>axongainsightrp@gmail.com</b> so you can see exactly what it looks like; a live rollout would mass-send this to every agency contact.</div></div>
+    <button class="x" onclick="closeSheet()">✕</button></div>
+  <div class="bd">
+    <div class="card" style="box-shadow:none;margin:0 0 16px">
+      <div class="mini" style="margin-bottom:10px">Subject: <b>${esc(tpl.subject)}</b></div>
+      <div style="border:1px solid var(--line);border-radius:8px;padding:18px;background:var(--panel2)">${tpl.bodyHtml}</div>
+    </div>
+    <div class="row-actions" style="align-items:center;gap:16px">${sendRingHtml(which)}</div>
+  </div>`;
+  showOverlay();
+}
+async function confirmSendAutomation(which){
+  const cfg=which==='settings'?automationConfig:escalationConfig;
+  const fab=$('#sendFab-'+which), ring=$('#sendRing-'+which);
+  if(!fab || fab.classList.contains('sending') || fab.classList.contains('sent')) return;
+  fab.classList.add('sending');
+  requestAnimationFrame(()=>{ if(ring) ring.classList.add('animating'); });
+  const sample=automationSampleContext();
+  const tpl=automationEmailTemplate(which,sample);
+  const RING_MS=1600;
+  const sendPromise=fetch('/api/automation/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'axongainsightrp@gmail.com',subject:tpl.subject,bodyHtml:tpl.bodyHtml})})
+    .then(res=>res.status===401?{sent:false,unauth:true}:res.json()).catch(e=>({sent:false,detail:String(e.message||e)}));
+  const [data]=await Promise.all([sendPromise,new Promise(r=>setTimeout(r,RING_MS))]);
+  if(data.unauth){ goToLogin(); return; }
+  fab.classList.remove('sending');
+  if(data.sent){
+    fab.classList.add('sent');
+    cfg.sentAt=new Date().toISOString();
+    setTimeout(()=>{ closeSheet(); route(); },1400);
+  }else{
+    fab.classList.remove('sending'); if(ring) ring.classList.remove('animating');
+    alert('Send failed: '+(data.detail||'unknown error'));
+  }
+  if(which==='settings') saveAutomationConfig(); else saveEscalationConfig();
+}
+// Simulates the day a scheduled automation would actually fire: a pulsating
+// red banner top-right (like a real notification), clicking it opens the
+// same email-preview review window used by "Preview & send".
+function showEmailDayNotification(){
+  const old=$('#emailDayNotif'); if(old) old.remove();
+  automationConfig.sentAt=null; saveAutomationConfig(); route();
+  const d=document.createElement('div');
+  d.id='emailDayNotif'; d.className='email-day-notif';
+  d.innerHTML='<b>Scheduled Survey Emails, Please Review</b>';
+  d.onclick=()=>{ d.remove(); openAutomationPreview('settings'); };
+  document.body.appendChild(d);
+}
+function automationBatchHtml(kind){
+  const bubble=(which,title,label,sentAt)=>`<div class="automation-bubble ${sentAt?'sent':'pending'}" onclick="toggleAutomationPanel('${which}')">
+    <div class="automation-bubble-title">${title}</div>
+    <div class="automation-bubble-sub">${esc(label)}</div>
+    ${sentAt?`<div class="automation-bubble-confirm"><i>Sent ${fmtDate(sentAt)} to axongainsightrp@gmail.com</i></div>`:''}
+  </div>`;
+  const panel=(which)=>{
+    if(!which) return '';
+    if(which==='settings') return `<div class="automation-panel">
+      <label class="mini" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">Month of quarter
+        <select onchange="setAutomationMonth(this.value)">
+          ${[1,2,3].map(m=>`<option value="${m}" ${automationConfig.month===m?'selected':''}>${ORDINAL(m)} month</option>`).join('')}
+        </select>
+      </label>
+      <label class="mini" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">Day of month <input type="number" min="1" max="31" style="width:70px" value="${automationConfig.day}" onchange="setAutomationDay(this.value)" oninput="setAutomationDay(this.value)"></label>
+      <button type="button" class="btn sm primary" onclick="openAutomationPreview('settings')">Preview &amp; send (demo)</button>
+    </div>`;
+    return `<div class="automation-panel">
+      <label class="mini" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">Days after first email <input type="number" min="0" style="width:70px" value="${escalationConfig.days}" onchange="setEscalationDays(this.value)" oninput="setEscalationDays(this.value)"></label>
+      <button type="button" class="btn sm primary" onclick="openAutomationPreview('escalation')">Preview &amp; send (demo)</button>
+    </div>`;
+  };
+  return `<div class="card" id="automationBatchCard-${kind}">
+    <h3>Automation Batch<span class="sortbar"><button type="button" class="btn sm" onclick="showEmailDayNotification()">Demo Email Day Notification</button></span></h3>
+    <div class="automation-flow">
+      ${bubble('settings','Automation Settings',automationScheduleLabel(),automationConfig.sentAt)}
+      <div class="automation-line"></div>
+      ${bubble('escalation','Escalation Automations',escalationScheduleLabel(),escalationConfig.sentAt)}
+    </div>
+    ${panel(automationPanelOpen)}
+  </div>`;
+}
+// No mock fallback here on purpose — the live pilot quarter must show exactly
+// what's real, nothing else. It starts empty and grows one row at a time as
+// actual Sheet responses land (via Refresh from Sheet), never pre-filled.
+function getTest10Data(){
+  const real=sheetDataCache||[];
+  return TEST10_ACCOUNTS
+    .map(name=>real.find(r=>r.account && r.account.trim().toLowerCase()===name.toLowerCase()))
+    .filter(Boolean)
+    .map(r=>({...r,source:'sheet'}));
+}
+// All 10 accounts with a received/not-received flag — used only for the
+// per-account status table, where showing "not received yet" for every
+// account is honest bookkeeping, not fabricated response data.
+function getTest10StatusList(){
+  const responses=getTest10Data();
+  return TEST10_ACCOUNTS.map(name=>{
+    const r=responses.find(x=>x.account.trim().toLowerCase()===name.toLowerCase());
+    return r ? {...r,received:true} : {account:name,received:false,score:null,reason:'',comment:'',timestamp:null,description:'',relationshipIntent:'',contactName:'',contactTitle:'',csatScore:null,csatComments:''};
+  });
+}
+// Managed-Account NPS respects the current Org Drill-down scope + "View as"
+// CSM filter (so picking a CSM shows only their accounts' NPS); Agency NPS is
+// always the full agency-wide population, per design.
+function getNpsScoped(kind,accts){
+  const full=getNpsDataset(kind);
+  let rows=full.rows;
+  if(kind==='managed' && accts){
+    const idSet=new Set(accts.map(a=>a.id));
+    rows=rows.filter(r=>idSet.has(r.id));
+  }
+  return {rows,promoters:rows.filter(r=>r.score>9),detractors:rows.filter(r=>r.score<=9)};
+}
+function drawNpsCharts(kind,accts){
+  let d;
+  const npsSel=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const npsQKey=quarterKeyOf(npsSel);
+  if(kind==='managed' && npsManagedTest10){
+    const rows=npsQKey===PILOT_QUARTER?test10AsNpsRows():[];
+    d={rows,promoters:rows.filter(r=>r.score>9),detractors:rows.filter(r=>r.score<=9)};
+  } else if(kind==='managed'){
+    const rows=getNpsScoped(kind,accts).rows.filter(r=>r.date && quarterKeyForDate(r.date)===npsQKey);
+    d={rows,promoters:rows.filter(r=>r.score>9),detractors:rows.filter(r=>r.score<=9)};
+  } else {
+    d=getNpsScoped(kind,accts);
+  }
+  const green=window.AXON_THEME?'#1a9e5c':'#3ddc97', red=window.AXON_THEME?'#d64545':'#ff6b6b';
+  destroyChartKey('npsDonut'+kind); destroyChartKey('npsBar'+kind);
+  const dEl=$('#nps'+kind+'Donut');
+  if(dEl){ charts['npsDonut'+kind]=new Chart(dEl,{type:'doughnut',data:{labels:['10 (Promoters)','9 & below'],datasets:[{data:[d.promoters.length,d.detractors.length],backgroundColor:[green,red],borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})}); }
+  const cats=npsCategoryCounts(d.detractors);
+  const bEl=$('#nps'+kind+'Bar');
+  if(bEl && cats.length){
+    // Built fully standalone (not via chartBaseOptions) to rule out any
+    // interaction with that helper's vertical-chart-oriented scale defaults.
+    // Highest count renders at the top, lowest at the bottom (cats is already
+    // sorted descending), with the actual category name as the axis label.
+    const light=(window.CSCC_THEME||document.documentElement.getAttribute('data-theme'))==='light'
+      || (!window.CSCC_THEME && !!window.AXON_THEME && document.documentElement.getAttribute('data-theme')!=='dark');
+    const gridColor=light?'#e0e0e0':'#242634', textColor=light?'#5c5c5c':'#9a9ba8';
+    const maxN=Math.max(...cats.map(c=>c.n));
+    charts['npsBar'+kind]=new Chart(bEl,{
+      type:'bar',
+      data:{ labels:cats.map(c=>c.cat), datasets:[{ data:cats.map(c=>c.n), backgroundColor:red, borderRadius:window.AXON_THEME?0:5 }] },
+      options:{
+        indexAxis:'y',
+        responsive:true, maintainAspectRatio:false,
+        scales:{
+          x:{ type:'linear', min:0, max:maxN+1, ticks:{ stepSize:1, color:textColor, callback:(v)=>v===0?'':v }, grid:{ color:gridColor } },
+          y:{ type:'category', ticks:{ color:textColor }, grid:{ display:false } }
+        },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ callbacks:{ label:(item)=>'Detractor mentions: '+item.raw } }
+        },
+        onClick:(evt,elements)=>{ if(!elements.length) return; scrollToNpsDriver(kind,cats[elements[0].index].cat); },
+        onHover:(evt,elements)=>{ evt.native.target.style.cursor=elements.length?'pointer':'default'; }
+      }
+    });
+  }
+  const complaints=d.rows.filter(r=>r.csatScore!=null && r.csatComments);
+  destroyChartKey('npsCsatDonut'+kind); destroyChartKey('npsCsmBar'+kind);
+  const csatDonutEl=$('#nps'+kind+'CsatDonut');
+  if(csatDonutEl){
+    // Real CSAT score now (not the NPS score) — same 10-green/9-and-below-red
+    // threshold, applied to the subset of responses with CSAT feedback logged.
+    const csatGreen=complaints.filter(r=>r.csatScore>9).length, csatRed=complaints.filter(r=>r.csatScore<=9).length;
+    charts['npsCsatDonut'+kind]=new Chart(csatDonutEl,{type:'doughnut',data:{labels:['10 (Promoters)','9 & below'],datasets:[{data:[csatGreen,csatRed],backgroundColor:[green,red],borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})});
+  }
+  const csmCounts={};
+  complaints.forEach(r=>{ csmCounts[r.owner]=(csmCounts[r.owner]||0)+1; });
+  const csmCats=Object.entries(csmCounts).map(([csm,n])=>({csm,n})).sort((a,b)=>b.n-a.n);
+  const csmBarEl=$('#nps'+kind+'CsmBar');
+  if(csmBarEl && csmCats.length){
+    const light2=(window.CSCC_THEME||document.documentElement.getAttribute('data-theme'))==='light'
+      || (!window.CSCC_THEME && !!window.AXON_THEME && document.documentElement.getAttribute('data-theme')!=='dark');
+    const gridColor2=light2?'#e0e0e0':'#242634', textColor2=light2?'#5c5c5c':'#9a9ba8';
+    const maxN2=Math.max(...csmCats.map(c=>c.n));
+    charts['npsCsmBar'+kind]=new Chart(csmBarEl,{
+      type:'bar',
+      data:{ labels:csmCats.map(c=>c.csm), datasets:[{ data:csmCats.map(c=>c.n), backgroundColor:(window.AXON_THEME?'#d4890a':'#ffb84d'), borderRadius:window.AXON_THEME?0:5 }] },
+      options:{
+        indexAxis:'y', responsive:true, maintainAspectRatio:false,
+        scales:{
+          x:{ type:'linear', min:0, max:maxN2+1, ticks:{ stepSize:1, color:textColor2, callback:(v)=>v===0?'':v }, grid:{ color:gridColor2 } },
+          y:{ type:'category', ticks:{ color:textColor2 }, grid:{ display:false } }
+        },
+        plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(item)=>'Comments: '+item.raw } } },
+        onClick:(evt,elements)=>{ if(!elements.length) return; scrollToCsmDriver(kind,csmCats[elements[0].index].csm); },
+        onHover:(evt,elements)=>{ evt.native.target.style.cursor=elements.length?'pointer':'default'; }
+      }
+    });
+  }
+  const amber=window.AXON_THEME?'#d4890a':'#ffb84d';
+  destroyChartKey('npsDesc'+kind); destroyChartKey('npsIntent'+kind);
+  const descEl=$('#nps'+kind+'Desc');
+  if(descEl){
+    const dc=categoryCounts(d.rows,'description');
+    const order=['Strategic Partner','Supplier','Vendor'], colors={'Strategic Partner':green,'Supplier':amber,'Vendor':red};
+    const ordered=order.filter(k=>dc.find(x=>x.k===k)).map(k=>dc.find(x=>x.k===k));
+    if(ordered.length) charts['npsDesc'+kind]=new Chart(descEl,{type:'doughnut',data:{labels:ordered.map(o=>o.k),datasets:[{data:ordered.map(o=>o.n),backgroundColor:ordered.map(o=>colors[o.k]),borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'55%',noScales:true})});
+  }
+  const intentEl=$('#nps'+kind+'Intent');
+  if(intentEl){
+    const ic=categoryCounts(d.rows,'relationshipIntent');
+    const order2=['Grow','Stay the same','Decline'], colors2={'Grow':green,'Stay the same':amber,'Decline':red};
+    const ordered2=order2.filter(k=>ic.find(x=>x.k===k)).map(k=>ic.find(x=>x.k===k));
+    if(ordered2.length) charts['npsIntent'+kind]=new Chart(intentEl,{type:'doughnut',data:{labels:ordered2.map(o=>o.k),datasets:[{data:ordered2.map(o=>o.n),backgroundColor:ordered2.map(o=>colors2[o.k]),borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'55%',noScales:true})});
+  }
+}
+let npsManagedTest10=false, npsManagedSel=null;
+function setNpsManagedTest10(v){ npsManagedTest10=v; route(); }
+function setNpsManagedYear(y){ const cur=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; npsManagedSel={year:+y,q:cur.q}; route(); }
+function setNpsManagedQ(q){ const cur=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; npsManagedSel={year:cur.year,q:+q}; route(); }
+function test10AsNpsRows(){
+  return getTest10Data().map(r=>{
+    const a=STATE.accounts.find(x=>x.name===r.account);
+    return {id:a?a.id:r.account,label:r.account,owner:a?a.ownerName:'—',score:r.score,date:(r.timestamp||'').slice(0,10),category:r.reason,comment:r.comment,source:r.source,description:r.description,relationshipIntent:r.relationshipIntent,csatScore:r.csatScore??null,csatComments:r.csatComments||''};
+  });
+}
+function npsView(kind,accts){
+  const label=kind==='managed'?'Managed-Account NPS':'Agency NPS';
+  let scope=kind==='managed'?'NPS from accounts actively managed by a CSM':'Broader agency-wide NPS across divisions/respondents — reported separately from managed accounts, not blended together — always shown across the whole agency regardless of "View as"';
+  if(kind==='managed' && ownerFilter) scope=`NPS for ${esc(ownerFilter)}'s managed accounts`;
+  const usingTest10=kind==='managed' && npsManagedTest10;
+  const npsSel=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const npsQKey=quarterKeyOf(npsSel);
+  let rows;
+  if(kind!=='managed'){ rows=getNpsScoped(kind,accts).rows; }
+  else if(usingTest10){ rows=npsQKey===PILOT_QUARTER?test10AsNpsRows():[]; }
+  else{ rows=getNpsScoped(kind,accts).rows.filter(r=>r.date && quarterKeyForDate(r.date)===npsQKey); }
+  const promoters=rows.filter(r=>r.score>9), detractors=rows.filter(r=>r.score<=9);
+  const total=rows.length, below9=detractors.length;
+  const cats=npsCategoryCounts(detractors);
+  const grouped={};
+  detractors.forEach(r=>{ (grouped[r.category]=grouped[r.category]||[]).push(r); });
+  const complaints=rows.filter(r=>r.csatScore!=null && r.csatComments);
+  const csmCounts={};
+  complaints.forEach(r=>{ csmCounts[r.owner]=(csmCounts[r.owner]||0)+1; });
+  const csmCats=Object.entries(csmCounts).map(([csm,n])=>({csm,n})).sort((a,b)=>b.n-a.n);
+  const csmGrouped={};
+  complaints.forEach(r=>{ (csmGrouped[r.owner]=csmGrouped[r.owner]||[]).push(r); });
+  const test10Bar=kind==='managed'?`<div class="row-actions" style="margin:-4px 0 14px;flex-wrap:wrap">
+    <button type="button" class="btn sm${npsManagedTest10?' primary':''}" onclick="setNpsManagedTest10(${npsManagedTest10?'false':'true'})">${npsManagedTest10?'← Back to full book':'Pull up Test 10 (live pilot)'}</button>
+    ${npsManagedTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():'Not yet refreshed — showing mock placeholders'}</span>`:''}
+  </div>`:'';
+  return `${test10Bar}<div class="card"><h3>${esc(label)} <span class="hint">${usingTest10?'Test 10 pilot accounts — live Sheet responses where received, mock placeholder otherwise':scope}</span></h3>
+    ${kind==='managed'?quarterToggleHtml(npsSel,'setNpsManagedYear','setNpsManagedQ'):''}
+    ${usingTest10&&npsQKey!==PILOT_QUARTER?`<p class="mini">The live pilot began in <b>${esc(PILOT_QUARTER)}</b> — no pilot responses exist for ${npsSel.year} Q${npsSel.q}.</p>`:''}
+    ${sheetFetchError&&usingTest10&&npsQKey===PILOT_QUARTER?`<p class="mini" style="color:var(--red)">${esc(sheetFetchError)}</p>`:''}
+    <div class="kpis" style="margin:14px 0">
+      <div class="kpi clickable" onclick="scrollToSection('npsSplitCard-${kind}')"><div class="l">Total responses</div><div class="v">${total}</div><div class="d">${kind==='managed'?'accounts with an NPS response':'respondents across the agency'}</div></div>
+      <div class="kpi risk-green clickable" onclick="scrollToSection('npsSplitCard-${kind}')"><div class="l">10 (Promoters)</div><div class="v">${promoters.length}</div><div class="d">${total?Math.round(promoters.length/total*100):0}% of responses</div></div>
+      <div class="kpi risk-red clickable" onclick="scrollToSection('npsDriversCard-${kind}')"><div class="l">9 &amp; Below</div><div class="v">${below9}</div><div class="d">${total?Math.round(below9/total*100):0}% of responses</div></div>
+    </div>
+    <div class="grid2" id="npsSplitCard-${kind}">
+      <div class="card" style="box-shadow:none"><h3>NPS Response split</h3><div class="chartbox"><canvas id="nps${kind}Donut"></canvas></div></div>
+      <div class="card" style="box-shadow:none"><h3>Why scores are below 9 <span class="hint">ranked high to low</span></h3><div class="chartbox" style="height:${Math.max(180,cats.length*38)}px"><canvas id="nps${kind}Bar"></canvas></div></div>
+    </div>
+    <div class="grid2" id="csatSplitCard-${kind}" style="margin-top:12px">
+      <div class="card" style="box-shadow:none"><h3>CSAT Response split <span class="hint">same NPS score, just for the subset with CSAT feedback logged</span></h3><div class="chartbox"><canvas id="nps${kind}CsatDonut"></canvas></div></div>
+      <div class="card" style="box-shadow:none"><h3>CSM Feedback <span class="hint">ranked high to low</span></h3><div class="chartbox" style="height:${Math.max(180,csmCats.length*38)}px"><canvas id="nps${kind}CsmBar"></canvas></div></div>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="card" style="box-shadow:none"><h3>How would you describe Axon to a colleague?</h3><div class="chartbox"><canvas id="nps${kind}Desc"></canvas></div></div>
+      <div class="card" style="box-shadow:none"><h3>Do you intend to grow, stay the same, or decline your relationship?</h3><div class="chartbox"><canvas id="nps${kind}Intent"></canvas></div></div>
+    </div>
+  </div>
+  <div class="card" id="npsDriversCard-${kind}"><h3>Non-promoter drivers</h3>
+    ${cats.length? cats.map(c=>`<details class="disc" id="npsdrv-${kind}-${npsSlug(c.cat)}" style="margin-bottom:10px">
+      <summary><h4 style="display:inline-flex;align-items:center;gap:8px;margin:0">${esc(c.cat)} <span class="pill p-red">${c.n}</span></h4></summary>
+      <div style="margin-top:10px">${grouped[c.cat].map(r=>`<div class="next-step" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><b>${esc(r.label)}</b><span class="pill p-red">${r.score}/10</span></div><div class="mini" style="margin-top:4px">${esc(r.comment)}</div><div class="mini" style="color:var(--muted2);margin-top:4px">${r.date?esc(r.date):''}${r.owner?' · Owner '+esc(r.owner):''}</div></div>`).join('')}</div>
+    </details>`).join('') : '<p class="mini">No responses below 9 in this scope.</p>'}
+  </div>
+  <div class="card" id="csmFeedbackCard-${kind}"><h3>CSM Feedback</h3>
+    ${csmCats.length? csmCats.map(c=>`<details class="disc" id="csmdrv-${kind}-${npsSlug(c.csm)}" style="margin-bottom:10px">
+      <summary><h4 style="display:inline-flex;align-items:center;gap:8px;margin:0">${esc(c.csm)} <span class="pill p-red">${c.n}</span></h4></summary>
+      <div style="margin-top:10px">${csmGrouped[c.csm].map(r=>`<div class="next-step" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><b>${esc(r.label)}</b><span class="pill ${r.csatScore===10?'p-green':'p-red'}">${r.csatScore}/10</span></div><div class="mini" style="margin-top:4px">${esc(r.csatComments)}</div><div class="mini" style="color:var(--muted2);margin-top:4px">${r.date?esc(r.date):''}</div></div>`).join('')}</div>
+    </details>`).join('') : '<p class="mini">No CSM feedback logged in this scope.</p>'}
+  </div>`;
+}
+function viewNpsManaged(accts){ return npsView('managed',accts); }
+function viewNpsAgency(accts){ return npsView('agency',accts); }
+// ---- CSAT (send/receive funnel) ----
+// UI preview only, per instruction — the three boxes and year/quarter filter
+// are wired to existing surveyState so the shape is real, but the automated
+// quarterly send + Customer-Insights ingestion described alongside this isn't
+// built yet: All Accounts -> Surveys Sent -> Surveys Received per quarter.
+let csatFilterSel=null, csatTest10=false, csatTest10Sel=null;
+function setCsatFilterYear(y){ const cur=csatFilterSel||{year:+MOCK_QUARTER.split('-Q')[0],q:+MOCK_QUARTER.split('-Q')[1]}; csatFilterSel={year:+y,q:cur.q}; route(); }
+function setCsatFilterQ(q){ const cur=csatFilterSel||{year:+MOCK_QUARTER.split('-Q')[0],q:+MOCK_QUARTER.split('-Q')[1]}; csatFilterSel={year:cur.year,q:+q}; route(); }
+function setCsatTest10(v){ csatTest10=v; route(); }
+function setCsatTest10Year(y){ const cur=csatTest10Sel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; csatTest10Sel={year:+y,q:cur.q}; route(); }
+function setCsatTest10Q(q){ const cur=csatTest10Sel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; csatTest10Sel={year:cur.year,q:+q}; route(); }
+// Forked funnel: All -> Sent -> (Received | Not received). The fork is drawn
+// as two SVG bezier paths branching from the Sent box, each with its own
+// animated dot, so the "sent" population visibly splits into exactly the two
+// outcomes below it — receivedV + notReceivedV always equal sentV by
+// construction at both call sites.
+function funnelForkHtml(allV,allSub,sentV,sentSub,recV,recSub,notV,notSub,scrollTarget){
+  const click=scrollTarget?` clickable" onclick="scrollToSection('${scrollTarget}')`:'';
+  return `<div class="funnel">
+    <div class="funnel-box${click}"><div class="l">All accounts</div><div class="v">${allV}</div><div class="d">${esc(allSub)}</div></div>
+    <div class="funnel-conn"><span class="funnel-flow"></span></div>
+    <div class="funnel-box risk-amber${click}"><div class="l">Surveys sent</div><div class="v">${sentV}</div><div class="d">${esc(sentSub)}</div></div>
+    <div class="funnel-fork">
+      <svg viewBox="0 0 60 80" preserveAspectRatio="none">
+        <defs>
+          <marker id="forkArrow" markerWidth="3" markerHeight="4" refX="3" refY="2" orient="auto">
+            <path d="M0,0 L3,2 L0,4 Z" class="fork-arrowhead"/>
+          </marker>
+        </defs>
+        <path class="fork-path" d="M0,40 Q30,40 54,14" marker-end="url(#forkArrow)"/>
+        <path class="fork-path" d="M0,40 Q30,40 54,66" marker-end="url(#forkArrow)"/>
+        <circle class="fork-dot" r="3.2"><animateMotion dur="1.8s" repeatCount="indefinite" path="M0,40 Q30,40 54,14"/></circle>
+        <circle class="fork-dot" r="3.2"><animateMotion dur="1.8s" begin="0.9s" repeatCount="indefinite" path="M0,40 Q30,40 54,66"/></circle>
+      </svg>
+    </div>
+    <div class="funnel-fork-boxes">
+      <div class="funnel-box small risk-green${click}"><div class="l">Received</div><div class="v">${recV}</div><div class="d">${esc(recSub)}</div></div>
+      <div class="funnel-box small risk-red${click}"><div class="l">Not received</div><div class="v">${notV}</div><div class="d">${esc(notSub)}</div></div>
+    </div>
+  </div>`;
+}
+function viewCsatTab(accts){
+  const test10Bar=`<div class="row-actions" style="margin-bottom:16px;flex-wrap:wrap">
+    <button type="button" class="btn sm${csatTest10?' primary':''}" onclick="setCsatTest10(${csatTest10?'false':'true'})">${csatTest10?'← Back to full book':'Test 10 (live pilot)'}</button>
+    ${csatTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():'Not yet refreshed — showing mock placeholders'}</span>`:''}
+  </div>`;
+
+  if(csatTest10){
+    const sel=csatTest10Sel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+    const qKey=quarterKeyOf(sel);
+    const isLive=qKey===PILOT_QUARTER;
+    const statusList=isLive?getTest10StatusList():[];
+    const sentCount=isLive?10:0;
+    const receivedCount=statusList.filter(r=>r.received).length;
+    const notReceivedCount=sentCount-receivedCount;
+    return `${test10Bar}<div class="card"><h3>NPS</h3>
+      ${quarterToggleHtml(sel,'setCsatTest10Year','setCsatTest10Q')}
+      ${sheetFetchError&&isLive?`<p class="mini" style="color:var(--red)">${esc(sheetFetchError)}</p>`:''}
+      ${!isLive?`<p class="mini">The live pilot began in <b>${esc(PILOT_QUARTER)}</b> — no pilot responses exist before that.</p>`:''}
+      ${funnelForkHtml(isLive?10:0,'pilot group',sentCount,'assumed sent',receivedCount,'real Sheet response',notReceivedCount,'no response yet','csatStatusCard')}
+    </div>
+    ${automationBatchHtml('csat')}
+    <div class="card" id="csatStatusCard"><h3>Customer status</h3>
+      ${statusList.length?`<table><thead><tr><th>Account</th><th>Status</th><th class="num">NPS Score</th><th>NPS Reason</th><th>NPS Comment</th><th class="num">CSAT Score</th><th>CSAT Comments</th><th>Date</th></tr></thead><tbody>
+      ${statusList.map(r=>{ const a=STATE.accounts.find(x=>x.name===r.account); return `<tr onclick="${a?`openAcct('${a.id}')`:''}" style="cursor:${a?'pointer':'default'}"><td><b>${esc(r.account)}</b></td><td><span class="pill ${r.received?'p-green':'p-amber'}">${r.received?'Received':'Not received'}</span></td><td class="num">${r.score==null?'—':`<span class="pill ${r.score===10?'p-green':'p-red'}">${r.score}/10</span>`}</td><td>${esc(r.reason||'—')}</td><td class="mini">${esc(r.comment||'—')}</td><td class="num">${r.csatScore==null?'—':`<span class="pill ${r.csatScore===10?'p-green':'p-red'}">${r.csatScore}/10</span>`}</td><td class="mini">${esc(r.csatComments||'—')}</td><td class="mini">${r.timestamp?esc(r.timestamp.slice(0,10)):'—'}</td></tr>`; }).join('')}
+      </tbody></table>`:'<p class="mini">No pilot data for this quarter.</p>'}
+    </div>`;
+  }
+
+  const sel=csatFilterSel||{year:+MOCK_QUARTER.split('-Q')[0],q:+MOCK_QUARTER.split('-Q')[1]};
+  const quarterKey=quarterKeyOf(sel);
+  let sentCount=0, receivedCount=0;
+  accts.forEach(a=>{
+    const s=(surveyState[a.id]||[]).find(x=>x.quarter===quarterKey);
+    if(s){ if(s.status==='Sent'||s.status==='Completed') sentCount++; if(s.status==='Completed') receivedCount++; }
+  });
+  return `${test10Bar}<div class="card"><h3>NPS</h3>
+    ${quarterToggleHtml(sel,'setCsatFilterYear','setCsatFilterQ')}
+    ${funnelForkHtml(accts.length,'in scope',sentCount,sel.year+' Q'+sel.q,receivedCount,sel.year+' Q'+sel.q,sentCount-receivedCount,'sent, awaiting response')}
+  </div>
+  ${automationBatchHtml('csat')}`;
+}
+// ---- Customer Insights (cross-account) ----
+// Pulls together the per-account Customer Insight notes AND the quarterly
+// survey notes/scores logged on Account 360 into one cross-account feed, so
+// patterns across the book are visible instead of buried one account at a
+// time — effectively the local "ingest point" for qualitative survey data
+// until a real survey pipeline exists.
+const INSIGHTS_STOPWORDS=new Set(['the','a','an','and','or','of','to','in','on','for','with','is','are','was','were','we','our','their','they','it','this','that','has','have','had','be','as','at','by','not','but','so','if','from','will','would','can','could','about','into','than','then','them','been','more','also','were']);
+function getInsightsData(accts,quarterKey){
+  const inScope=new Set((accts||[]).map(a=>a.id));
+  let entries=[];
+  Object.keys(insights).forEach(acctId=>{
+    if(!inScope.has(acctId)) return;
+    const a=STATE.accounts.find(x=>x.id===acctId); if(!a) return;
+    (insights[acctId]||[]).forEach(n=>entries.push({type:'insight',acctId,acctName:a.name,owner:a.ownerName,t:n.t,note:n.note}));
+  });
+  Object.keys(surveyState).forEach(acctId=>{
+    if(!inScope.has(acctId)) return;
+    const a=STATE.accounts.find(x=>x.id===acctId); if(!a) return;
+    (surveyState[acctId]||[]).forEach(s=>{ if(s.notes && s.notes.trim()) entries.push({type:'survey',acctId,acctName:a.name,owner:a.ownerName,t:s.sentAt||new Date().toISOString(),note:s.notes,score:s.score,quarter:s.quarter}); });
+  });
+  // Test 10 pilot responses are always real now (getTest10Data has no mock
+  // fallback) — count them as genuine logged entries.
+  getTest10Data().forEach(r=>{
+    const a=STATE.accounts.find(x=>x.name===r.account);
+    if(!a || !inScope.has(a.id)) return;
+    entries.push({type:'survey-live',acctId:a.id,acctName:a.name,owner:a.ownerName,t:r.timestamp,note:r.comment||`NPS ${r.score}/10 — ${r.reason||'no reason given'}`,score:r.score});
+  });
+  if(quarterKey) entries=entries.filter(e=>quarterKeyForDate(e.t)===quarterKey);
+  entries.sort((x,y)=>new Date(y.t)-new Date(x.t));
+  const wordCounts={};
+  entries.forEach(e=>{
+    String(e.note||'').toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).forEach(w=>{
+      if(w.length<4||INSIGHTS_STOPWORDS.has(w)) return;
+      wordCounts[w]=(wordCounts[w]||0)+1;
+    });
+  });
+  const themes=Object.entries(wordCounts).map(([w,n])=>({w,n})).filter(t=>t.n>1).sort((a,b)=>b.n-a.n).slice(0,8);
+  const last30=entries.filter(e=>Date.now()-new Date(e.t).getTime()<=30*864e5).length;
+  const acctsCovered=new Set(entries.map(e=>e.acctId)).size;
+  return {entries,themes,last30,acctsCovered};
+}
+function drawInsightsChart(accts){
+  const sel=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const {themes}=getInsightsData(accts,quarterKeyOf(sel));
+  destroyChartKey('insightsTheme');
+  const el=$('#insightsThemeChart'); if(!el||!themes.length) return;
+  const light=(window.CSCC_THEME||document.documentElement.getAttribute('data-theme'))==='light'
+    || (!window.CSCC_THEME && !!window.AXON_THEME && document.documentElement.getAttribute('data-theme')!=='dark');
+  const gridColor=light?'#e0e0e0':'#242634', textColor=light?'#5c5c5c':'#9a9ba8';
+  const violet=window.AXON_THEME?'#7a5af8':'#c08bff';
+  const maxN=Math.max(...themes.map(t=>t.n));
+  charts.insightsTheme=new Chart(el,{
+    type:'bar',
+    data:{ labels:themes.map(t=>t.w), datasets:[{ data:themes.map(t=>t.n), backgroundColor:violet, borderRadius:window.AXON_THEME?0:5 }] },
+    options:{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      scales:{
+        x:{ type:'linear', min:0, max:maxN+1, ticks:{ stepSize:1, color:textColor, callback:(v)=>v===0?'':v }, grid:{ color:gridColor } },
+        y:{ type:'category', ticks:{ color:textColor }, grid:{ display:false } }
+      },
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:(item)=>'Mentions: '+item.raw } } }
+    }
+  });
+}
+let insightsSel=null;
+function setInsightsYear(y){ const cur=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; insightsSel={year:+y,q:cur.q}; route(); }
+function setInsightsQ(q){ const cur=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; insightsSel={year:cur.year,q:+q}; route(); }
+function viewInsightsTab(accts){
+  const sel=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const qKey=quarterKeyOf(sel);
+  const isLive=qKey===PILOT_QUARTER;
+  const {entries,themes,last30,acctsCovered}=getInsightsData(accts,qKey);
+  return `<div class="card"><h3>Customer Insights</h3>
+    ${quarterToggleHtml(sel,'setInsightsYear','setInsightsQ')}
+    <div class="kpis" style="margin:14px 0">
+      <div class="kpi clickable" onclick="scrollToSection('insightsRecentCard')"><div class="l">Total entries</div><div class="v">${entries.length}</div><div class="d">insights + survey notes, ${sel.year} Q${sel.q}</div></div>
+      <div class="kpi clickable" onclick="scrollToSection('insightsRecentCard')"><div class="l">Logged last 30 days</div><div class="v">${last30}</div><div class="d">recent activity</div></div>
+      <div class="kpi clickable" onclick="scrollToSection('insightsMatrixCard')"><div class="l">Accounts covered</div><div class="v">${acctsCovered}</div><div class="d">of ${accts.length} in scope</div></div>
+    </div>
+    ${themes.length?`<h4 style="margin:14px 0 8px">Common themes</h4><div class="chartbox" style="height:${Math.max(160,themes.length*32)}px"><canvas id="insightsThemeChart"></canvas></div>`:''}
+  </div>
+  <div class="card" id="insightsMatrixCard"><h3>Live survey matrix</h3>
+    ${isLive?(()=>{ const rows=getTest10Data(); return `<div class="row-actions" style="margin-bottom:12px"><button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString()+' · '+rows.length+' of 10 received':'Not yet refreshed'}</span></div>
+    ${sheetFetchError?`<p class="mini" style="color:var(--red)">${esc(sheetFetchError)}</p>`:''}
+    ${rows.length?`<div style="overflow-x:auto"><table class="matrix-table"><thead><tr><th>Timestamp</th><th>Account</th><th>CSM</th><th class="num">NPS Score</th><th>Reason</th><th>Comment</th><th>Contact Name</th><th>Contact Title</th><th>Describes Axon as</th><th>Relationship Intent</th><th class="num">CSAT Score</th><th>CSAT Comments</th></tr></thead><tbody>
+    ${rows.map(r=>{ const a=STATE.accounts.find(x=>x.name===r.account); return `<tr onclick="${a?`openAcct('${a.id}')`:''}" style="cursor:${a?'pointer':'default'}"><td class="mini">${r.timestamp?esc(r.timestamp):'—'}</td><td><b>${esc(r.account)}</b></td><td>${a?ownerCell(a.ownerName):'—'}</td><td class="num">${r.score==null?'—':`<span class="pill ${r.score===10?'p-green':'p-red'}">${r.score}/10</span>`}</td><td>${esc(r.reason||'—')}</td><td class="mini">${esc(r.comment||'—')}</td><td class="mini">${esc(r.contactName||'—')}</td><td class="mini">${esc(r.contactTitle||'—')}</td><td class="mini">${esc(r.description||'—')}</td><td class="mini">${esc(r.relationshipIntent||'—')}</td><td class="num">${r.csatScore==null?'—':`<span class="pill ${r.csatScore===10?'p-green':'p-red'}">${r.csatScore}/10</span>`}</td><td class="mini">${esc(r.csatComments||'—')}</td></tr>`; }).join('')}
+    </tbody></table></div>`:'<p class="mini">No responses yet.</p>'}`; })():`<p class="mini">The live pilot began in <b>${esc(PILOT_QUARTER)}</b> — no pilot matrix data exists for ${sel.year} Q${sel.q}.</p>`}
+  </div>
+  <div class="card" id="insightsRecentCard"><h3>Recent entries</h3>
+    ${entries.length? entries.slice(0,60).map(e=>`<div class="next-step" style="margin-bottom:8px;cursor:pointer" onclick="openAcct('${e.acctId}')">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+        <span style="display:flex;align-items:center;gap:8px">${avatarChip(e.acctName)}<b>${esc(e.acctName)}</b>${e.type==='survey-live'?'<span class="pill p-green">Live pilot response</span>':e.type==='survey'?`<span class="pill p-blue">Survey${e.quarter?' · '+esc(e.quarter):''}</span>`:'<span class="pill p-gray">Insight</span>'}${e.score!=null?`<span class="pill ${e.score>=9?'p-green':e.score>=7?'p-amber':'p-red'}">${e.score}/10</span>`:''}</span>
+        <span class="mini" style="color:var(--muted2)">${new Date(e.t).toLocaleDateString()} · ${ownerCell(e.owner)}</span>
+      </div>
+      <div class="mini" style="margin-top:6px">${esc(e.note)}</div>
+    </div>`).join('') : '<p class="mini">No insights or survey notes logged yet in this scope.</p>'}
+  </div>`;
+}
+function viewAcctScorecard(){ return scaffoldView('Account Scorecard','quantitative graded rollup at the account level',[
+  'Distinct from Account Outcomes — this is a graded snapshot, not goal-progress narrative','Mirrors the existing CSM Scorecard pattern at account grain']); }
+function viewProdScorecard(){ return scaffoldView('Product Scorecard','quantitative graded rollup at the product level',[
+  'Distinct from Product Outcomes — graded snapshot, not goal-progress narrative','Mirrors the existing CSM Scorecard pattern at product grain']); }
+function viewIntegrations(){ return scaffoldView('Integrations & Data Sources','third-party system context and the real-Salesforce-server connection',[
+  'Comparisons referenced: Enterprise, law enforcement, Prepared, Carbyne, Totango','Real Salesforce server connection is a backend/technical requirement, not a customer-facing feature']); }
 const HUES=['ty','tb','tv','tg','ta','tr'];
 function hueFor(s){ const str=String(s||''); let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return HUES[h%HUES.length]; }
 function stateTag(a){ const st=a.state||'—'; return `<span class="tag ${hueFor(st)}">${esc(st)}</span>`; }
+function initials(name){
+  const parts=String(name||'').trim().split(/\s+/).filter(Boolean);
+  if(!parts.length) return '?';
+  return (parts[0][0]+(parts.length>1?parts[parts.length-1][0]:'')).toUpperCase();
+}
+function avatarChip(name){
+  if(!name) return '';
+  return `<span class="avatar ${hueFor(name)}" title="${esc(name)}">${esc(initials(name))}</span>`;
+}
+function ownerCell(name){
+  if(!name) return '<span class="mini">—</span>';
+  return `<span class="owner-cell">${avatarChip(name)}<span>${esc(name)}</span></span>`;
+}
 function catTag(cat,extra){ return `<span class="tag ${hueFor(cat)}"${extra?` style="${extra}"`:''}>${esc(cat)}</span>`; }
 function healthCell(h){ const c=h>=75?'var(--green)':h>=50?'var(--amber)':'var(--red)'; return `<span class="hs"><span class="bar"><i style="width:${h}%;background:${c}"></i></span><b style="color:${c}">${h}</b></span>`; }
 function tierPill(t){ return t==='healthy'?'<span class="pill p-green">Healthy</span>':t==='watch'?'<span class="pill p-amber">Watch</span>':'<span class="pill p-red">At risk</span>'; }
@@ -745,32 +1556,61 @@ function renderCrumb(){
   $('#scoperole').textContent = node && node.title ? node.title : '';
   const va=$('#viewas');
   if(va){
-    const owners=[...new Set(STATE.accounts.map(a=>a.ownerName).filter(Boolean))].sort();
-    va.innerHTML = `View as
-      <input list="csmSearchList" id="csmSearch" class="select" style="text-transform:none;font-weight:600;width:190px" placeholder="Search CSM…" autocomplete="off" value="${esc(ownerFilter)}" oninput="onOwnerSearchInput(this.value)">
-      <datalist id="csmSearchList">${owners.map(o=>`<option value="${esc(o)}">`).join('')}</datalist>
-      ${ownerFilter?` <button class="btn sm" onclick="setOwnerFilter('')">Clear</button>`:''}`;
+    va.innerHTML = `<span class="mini" style="margin-right:6px">View as</span>
+      <div class="email-dd" id="csmDd" style="width:210px">
+        <button type="button" class="email-dd-btn${csmDdOpen?' open':''}" id="csmDdBtn" aria-haspopup="listbox" aria-expanded="${csmDdOpen?'true':'false'}" onclick="toggleCsmDd()">
+          <span class="email-dd-btn-text">${ownerFilter?esc(ownerFilter):'All CSMs'}</span>
+          <span class="email-dd-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="email-dd-menu" id="csmDdMenu" role="listbox"${csmDdOpen?'':' hidden'}>
+          <div style="padding:6px 6px 2px"><input type="text" class="flyout-search" id="csmDdSearch" placeholder="Search CSM…" autocomplete="off"></div>
+          <div id="csmDdList"></div>
+        </div>
+      </div>`;
+    if(csmDdOpen){
+      renderCsmDdList(csmDdFilter);
+      const inp=$('#csmDdSearch');
+      if(inp){ inp.value=csmDdFilter||''; inp.addEventListener('input',e=>renderCsmDdList(e.target.value)); inp.focus(); }
+    }
   }
 }
-// Type-to-search "View as CSM" combobox. Only commits the filter (and re-renders)
-// once the typed text is blank or exactly matches a real CSM name — selecting a
-// suggestion from the <datalist> dropdown does this naturally — so partial typing
-// doesn't trigger a re-render mid-keystroke and steal focus from the input.
-function onOwnerSearchInput(v){
-  const owners=new Set(STATE.accounts.map(a=>a.ownerName).filter(Boolean));
-  if(v===''||owners.has(v)) setOwnerFilter(v);
+let csmDdOpen=false, csmDdFilter='';
+function toggleCsmDd(){ csmDdOpen=!csmDdOpen; if(!csmDdOpen) csmDdFilter=''; renderCrumb(); }
+function renderCsmDdList(q){
+  csmDdFilter=q;
+  const list=$('#csmDdList'); if(!list) return;
+  const owners=[...new Set(STATE.accounts.map(a=>a.ownerName).filter(Boolean))].sort();
+  const qq=(q||'').toLowerCase();
+  const filtered=qq?owners.filter(o=>o.toLowerCase().includes(qq)):owners;
+  list.innerHTML = `<button type="button" class="email-dd-item${!ownerFilter?' selected':''}" role="option" onclick="pickCsmDd('')"><span class="email-dd-item-title">All CSMs</span></button>`
+    + filtered.map(o=>`<button type="button" class="email-dd-item${ownerFilter===o?' selected':''}" role="option" onclick="pickCsmDd('${attrStr(o)}')"><span class="email-dd-item-title">${esc(o)}</span></button>`).join('')
+    + (filtered.length===0?'<p class="mini" style="padding:10px 12px">No matches.</p>':'');
 }
+function pickCsmDd(name){ csmDdOpen=false; csmDdFilter=''; setOwnerFilter(name); }
 
 function setScope(id){ STATE.scope=id; route(); }
-function setTab(t){ STATE.tab=t; document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===t)); window.scrollTo(0,0); route(); }
+function setTab(t){ currentAcctView=null; STATE.tab=t; navOpenCat=categoryForTab(t).id; window.scrollTo(0,0); route(); }
+
+function tabBadges(){
+  return {
+    ctas: ctas.filter(c=>c.status!=='Done').length,
+    escalations: STATE.escOpenCount||0,
+    casewatch: STATE.accounts.filter(a=>a.casesBlocked>0).length,
+    engagement: STATE.accounts.filter(a=>cadenceInfo(a).tier==='red').length,
+    tap: STATE.accounts.filter(a=>a.tapStatus==='overdue').length,
+    usage: STATE.accounts.filter(a=>adoptionTier(a)==='low').length,
+  };
+}
 
 function route(){
   if(!STATE.tree) return;
   if(!STATE.nodeIndex[STATE.scope]) STATE.scope='ROOT';
+  if(currentAcctView){ renderAcctPage(); renderNav(); wrapWideTables(); return; }
   STATE.accounts.forEach(a=>a.readiness=readinessScore(a));
   const isHome = STATE.tab==='home';
-  $('#scopebar').style.display = isHome ? 'none' : '';
-  if(!isHome) renderCrumb();
+  const hideScope = isHome || STATE.tab==='npsagency';
+  $('#scopebar').style.display = hideScope ? 'none' : '';
+  if(!hideScope) renderCrumb();
   const accts0 = accountsUnder(STATE.scope);
   const accts = ownerFilter ? accts0.filter(a=>a.ownerName===ownerFilter) : accts0;
   const app=$('#app');
@@ -791,17 +1631,44 @@ function route(){
   else if(STATE.tab==='model') app.innerHTML=viewModel(accts);
   else if(STATE.tab==='resources') app.innerHTML=viewResources();
   else if(STATE.tab==='execreport') app.innerHTML=viewExecReport(accts);
+  else if(STATE.tab==='gong') app.innerHTML=viewGong();
+  else if(STATE.tab==='acctoutcomes') app.innerHTML=viewAcctOutcomes();
+  else if(STATE.tab==='prodoutcomes') app.innerHTML=viewProdOutcomes();
+  else if(STATE.tab==='npsmanaged') app.innerHTML=viewNpsManaged(accts);
+  else if(STATE.tab==='npsagency') app.innerHTML=viewNpsAgency(accts);
+  else if(STATE.tab==='csat') app.innerHTML=viewCsatTab(accts);
+  else if(STATE.tab==='insights') app.innerHTML=viewInsightsTab(accts);
+  else if(STATE.tab==='acctscorecard') app.innerHTML=viewAcctScorecard();
+  else if(STATE.tab==='prodscorecard') app.innerHTML=viewProdScorecard();
+  else if(STATE.tab==='integrations') app.innerHTML=viewIntegrations();
   if(STATE.tab==='overview') drawOverviewCharts(accts);
   if(STATE.tab==='home') drawHomeChart();
   if(STATE.tab==='escalations') drawEscTrendChart(accts);
-  const cb=$('#ctaBadge'); if(cb) cb.textContent = ctas.filter(c=>c.status!=='Done').length;
-  const caseB=$('#caseBadge'); if(caseB) caseB.textContent = STATE.accounts.filter(a=>a.casesBlocked>0).length;
-  const cadB=$('#cadenceBadge'); if(cadB) cadB.textContent = STATE.accounts.filter(a=>cadenceInfo(a).tier==='red').length;
-  const tapB=$('#tapBadge'); if(tapB) tapB.textContent = STATE.accounts.filter(a=>a.tapStatus==='overdue').length;
-  const useB=$('#usageBadge'); if(useB) useB.textContent = STATE.accounts.filter(a=>adoptionTier(a)==='low').length;
-  $('#foot').innerHTML = isHome
-    ? `Axon Customer Success Command Center · an internal replacement for Gainsight.`
-    : `Scope: <b>${esc(STATE.nodeIndex[STATE.scope].name)}</b>${ownerFilter?` · filtered to CSM <b>${esc(ownerFilter)}</b>`:''} · ${accts.length} accounts with an active renewal · Health = live cases + renewal timing (tunable in Health Model). LTV & products from closed-won deals. Sentiment from lifetime support signals. CSAT, CTAs & success plans persist in your browser.`;
+  if(STATE.tab==='npsmanaged') drawNpsCharts('managed',accts);
+  if(STATE.tab==='npsagency') drawNpsCharts('agency',accts);
+  if(STATE.tab==='insights') drawInsightsChart(accts);
+  renderNav();
+  applyBadges();
+  wrapWideTables();
+}
+// Tables are built with a fixed column set (Account/Owner/Stage/.../Health etc.)
+// that doesn't fit narrower/non-expanded windows. Rather than hand-wrap every
+// table call site, wrap them all here, after every render, in a horizontally
+// scrollable container so overflow scrolls within the card instead of bleeding
+// out past its white background into the page underneath.
+function wrapWideTables(){
+  document.querySelectorAll('#app table, #sheet table').forEach(t=>{
+    if(t.closest('.table-scroll')) return;
+    if(t.parentElement && t.parentElement.style && t.parentElement.style.overflowX==='auto') return;
+    const wrap=document.createElement('div');
+    wrap.className='table-scroll';
+    t.parentNode.insertBefore(wrap,t);
+    wrap.appendChild(t);
+  });
+}
+function applyBadges(){
+  const badges=tabBadges();
+  document.querySelectorAll('[data-badge]').forEach(el=>{ const n=badges[el.dataset.badge]; el.textContent = n==null?'':n; el.classList.toggle('hidden', !n); });
 }
 
 // ---- Home ----
@@ -823,7 +1690,7 @@ function viewHome(){
     ['Growth (organic + expansion + transactional)',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard'],
     ['Customer insights logged',insightsRecent,'last 30 days across the book','scorecard'],
     ['Book NPS',npsR?npsR.score:'—',npsR?(npsR.n+' survey responses · '+npsR.promoters+' promoters, '+npsR.detractors+' detractors'):'no biannual survey responses on file','scorecard'],
-    ['Renewal ARR (book)',fmtMoney(r.arr),r.renewals+' open renewals','overview'],
+    ['Total Contract Value (book)',fmtMoney(r.arr),r.renewals+' open renewals','overview'],
     ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% risk-weighted','renewals'],
     ['New logos to onboard',logos.length,planned+' with a success plan','plans'],
     ['TAP refreshes due',tapOverdue+tapDueSoon,tapOverdue+' overdue · '+tapDueSoon+' due within 90 days','tap'],
@@ -874,7 +1741,7 @@ function viewOverview(accts){
   const kpis=[
     ['Engagement rate',r.engagementPct+'%',r.inCadence+' of '+r.n+' in outreach cadence','engagement'],
     ['Growth in scope',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard'],
-    ['Renewal ARR in scope',fmtMoney(r.arr),r.renewals+' open renewals','renewals'],
+    ['Total Contract Value in scope',fmtMoney(r.arr),r.renewals+' open renewals','renewals'],
     ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% of book, risk-weighted','renewals'],
     ['Avg health (ARR-wtd)',r.health,r.red+' at-risk · '+r.amber+' watch · '+r.green+' healthy','model'],
     ['NPS in scope',npsR?npsR.score:'—',npsR?(npsR.n+' of '+accts.length+' accounts surveyed'):'no survey responses in scope','scorecard'],
@@ -885,14 +1752,14 @@ function viewOverview(accts){
   return `
   <div class="kpis">${kpis.map(k=>`<div class="kpi clickable${/at risk/i.test(k[0])?' accent':''}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   <div class="grid2">
-    <div class="card"><h3>Renewal ARR by team <span class="hint">click a team in Org Drill-down to scope</span></h3><div class="chartbox"><canvas id="cTeam"></canvas></div></div>
+    <div class="card"><h3>Total Contract Value by team <span class="hint">click a team in Org Drill-down to scope</span></h3><div class="chartbox"><canvas id="cTeam"></canvas></div></div>
     <div class="card"><h3>Book health distribution</h3><div class="chartbox"><canvas id="cHealth"></canvas></div>
       <div class="legend"><span><i class="dot" style="background:var(--green)"></i>Healthy ≥75</span><span><i class="dot" style="background:var(--amber)"></i>Watch 50–74</span><span><i class="dot" style="background:var(--red)"></i>At risk &lt;50</span></div>
     </div>
   </div>
   <div class="card"><h3>Top risk-weighted accounts <span class="hint">renewal ARR × risk — where attention protects the most revenue</span></h3>
-    <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th class="num">Lifetime $</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th><th class="num">ARR at risk</th></tr></thead><tbody>
-    ${topRisk.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${esc(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td></tr>`).join('')}
+    <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Annualized Revenue</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th><th class="num">ARR at risk</th></tr></thead><tbody>
+    ${topRisk.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td></tr>`).join('')}
     </tbody></table>
     <p class="mini" style="margin-top:8px">* CSAT is a placeholder derived from support sentiment until survey data is connected. NPS reflects the biannual survey where a response is on file.</p>
   </div>`;
@@ -936,12 +1803,61 @@ function drawOverviewCharts(accts){
   const barRisk=window.AXON_THEME?'#d64545':'#ff6b6b';
   const radius=window.AXON_THEME?0:5;
   const t=$('#cTeam'); if(t){ charts.team=new Chart(t,{type:'bar',data:{labels:groups.map(g=>g.label),datasets:[
-    {label:'Renewal ARR',data:groups.map(g=>Math.round(g.arr)),backgroundColor:barMain,borderRadius:radius},
+    {label:'Total Contract Value',data:groups.map(g=>Math.round(g.arr)),backgroundColor:barMain,borderRadius:radius},
     {label:'ARR at risk',data:groups.map(g=>Math.round(g.risk)),backgroundColor:barRisk,borderRadius:radius}]},
     options:chartBaseOptions({moneyTicks:true})}); }
   const r=rollup(accts);
   const hc=window.AXON_THEME?['#1a9e5c','#d4890a','#d64545']:['#3ddc97','#ffb84d','#ff6b6b'];
   const h=$('#cHealth'); if(h){ charts.health=new Chart(h,{type:'doughnut',data:{labels:['Healthy','Watch','At risk'],datasets:[{data:[r.green,r.amber,r.red],backgroundColor:hc,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',legend:false,noScales:true})}); }
+}
+
+// ---- Account 360 charts ----
+// Kept in a separate charts registry (acctCharts) from the page-level `charts`
+// object so opening/closing the account overlay never tears down whatever
+// chart is live on the page underneath it.
+function destroyAcctCharts(){ Object.values(acctCharts).forEach(c=>{try{c.destroy()}catch(e){}}); acctCharts={}; }
+function drawAcctSyncCharts(a){
+  destroyAcctCharts();
+  const radius=window.AXON_THEME?0:5;
+  const green=window.AXON_THEME?'#1a9e5c':'#3ddc97', red=window.AXON_THEME?'#d64545':'#ff6b6b';
+  const hEl=$('#acctHealthChart');
+  if(hEl){
+    const comps=a.comps||[];
+    const labels=['Base',...comps.map(c=>c[0])];
+    const data=[100,...comps.map(c=>c[1])];
+    const colors=data.map(v=>v<0?red:green);
+    acctCharts.health=new Chart(hEl,{type:'bar',data:{labels,datasets:[{label:'Impact on health score',data,backgroundColor:colors,borderRadius:radius}]},options:chartBaseOptions({legend:false})});
+  }
+  const cEl=$('#acctCaseChart');
+  if(cEl && a.lifeCases!=null && a.lifeCases>0){
+    const barMain=window.AXON_THEME?'#2a7de1':'#5ec8ff';
+    acctCharts.cases=new Chart(cEl,{type:'bar',data:{labels:['All cases','High/urgent'],datasets:[
+      {label:'Lifetime',data:[a.lifeCases||0,a.lifeHigh||0],backgroundColor:barMain,borderRadius:radius},
+      {label:'Currently open',data:[a.openCases||0,a.highCases||0],backgroundColor:red,borderRadius:radius}
+    ]},options:chartBaseOptions()});
+  }
+}
+function drawAcctDealsChart(deals){
+  const dEl=$('#acctDealsChart'); if(!dEl||!deals||!deals.length) return;
+  const radius=window.AXON_THEME?0:5;
+  const barMain=window.AXON_THEME?'#2a7de1':'#5ec8ff';
+  const chrono=[...deals].reverse();
+  try{acctCharts.deals&&acctCharts.deals.destroy()}catch(e){}
+  acctCharts.deals=new Chart(dEl,{type:'bar',data:{labels:chrono.map(o=>o.CloseDate||''),datasets:[{label:'Deal amount',data:chrono.map(o=>o.Amount||0),backgroundColor:barMain,borderRadius:radius}]},options:chartBaseOptions({moneyTicks:true,legend:false})});
+}
+function drawAcctProdChart(fams){
+  const pEl=$('#acctProdChart'); if(!pEl||!fams||!fams.length) return;
+  const radius=window.AXON_THEME?0:5;
+  const barViolet=window.AXON_THEME?'#7a5af8':'#c08bff';
+  try{acctCharts.prod&&acctCharts.prod.destroy()}catch(e){}
+  const opts=chartBaseOptions({legend:false}); opts.indexAxis='y';
+  // Same axis-type swap as the NPS bar chart: indexAxis:'y' makes y the
+  // category axis and x the value axis, so types/formatting must be assigned
+  // to the correct one rather than the chartBaseOptions vertical-chart defaults.
+  opts.scales.y.type='category';
+  opts.scales.x.type='linear';
+  opts.scales.x.ticks.callback=(v)=>fmtMoney(v);
+  acctCharts.prod=new Chart(pEl,{type:'bar',data:{labels:fams.map(f=>prodName(f.fam)),datasets:[{label:'Revenue',data:fams.map(f=>f.amt||0),backgroundColor:barViolet,borderRadius:radius}]},options:opts});
 }
 function shortName(n){ return n.length>16?n.slice(0,15)+'…':n; }
 
@@ -956,8 +1872,8 @@ function shortName(n){ return n.length>16?n.slice(0,15)+'…':n; }
 // the practical bridge into Sigma or any other BI tool until a real pipeline exists.
 function execReportRows(accts){
   return accts.map(a=>({
-    AccountId:a.id, Account:a.name, Owner:a.ownerName, Segment:a.segment||'', Tier:OPP_TIER_LABELS[opportunityTier(a)],
-    Health:a.health, RenewalARR:a.renewalAmount, ARRAtRisk:Math.round(a.riskARR), LifetimeValue:a.ltv||0,
+    AccountId:a.id, Account:a.name, State:a.state||'', Owner:a.ownerName, Segment:a.segment||'', Tier:OPP_TIER_LABELS[opportunityTier(a)],
+    Health:a.health, TotalContractValue:a.renewalAmount, ARRAtRisk:Math.round(a.riskARR), AnnualizedRevenue:a.ltv||0,
     OpenCases:a.openCases, HighUrgentCases:a.highCases, BlockedCases:a.casesBlocked||0, AgingCases:a.casesAging||0,
     NPS:a.nps==null?'':a.nps, OpenCTAs:ctas.filter(c=>c.acctId===a.id&&c.status!=='Done').length,
     TapStatus:a.tapStatus||'', EscalationStatus:peekEscState(a.id).status||'', LoggedActivityCount:(activityFor(a.id).log||[]).length,
@@ -989,7 +1905,7 @@ function viewExecReport(accts){
   return `<div class="card"><h3>Executive report <span class="hint">candidate to replace the Sigma executive dashboard — computed live from this book, not a Sigma connection</span></h3>
   <p class="mini" style="line-height:1.7">Sigma today rolls up CS activity — TAP notes, other CTA activity, and logged timeline/activity — into leadership reporting. This app has no Sigma/warehouse credentials in this environment, so it can't push there directly yet — but every number below is computed live from the same underlying signals (renewals, TAP, CTAs, escalations, logged activity), so it can stand in for that report today. Use <b>Export CSV</b> as the practical bridge into Sigma or any other BI tool until a real pipeline exists.</p>
   <div class="kpis" style="margin:14px 0">
-    <div class="kpi"><div class="l">Renewal ARR</div><div class="v">${fmtMoney(r.arr)}</div><div class="d">${r.renewals} open renewals</div></div>
+    <div class="kpi"><div class="l">Total Contract Value</div><div class="v">${fmtMoney(r.arr)}</div><div class="d">${r.renewals} open renewals</div></div>
     <div class="kpi accent"><div class="l">ARR at risk</div><div class="v">${fmtMoney(r.risk)}</div><div class="d">${Math.round(r.risk/(r.arr||1)*100)}% of book</div></div>
     <div class="kpi"><div class="l">Growth (all types)</div><div class="v">${fmtMoney(r.growthTotal)}</div><div class="d">Renewal ${fmtMoney(r.growth.Renewal)} · Expansion ${fmtMoney(r.growth.Expansion)} · Transactional ${fmtMoney(r.growth.Transactional)}</div></div>
     <div class="kpi"><div class="l">Engagement rate</div><div class="v">${r.engagementPct}%</div><div class="d">${r.inCadence} of ${r.n} in cadence</div></div>
@@ -1009,8 +1925,8 @@ function viewExecReport(accts){
   </div>
   <div class="card"><h3>Account-level detail <span class="hint">${rows.length} accounts in scope</span></h3>
   <div class="searchbar"><input id="xrsearch" placeholder="Filter accounts…" oninput="filterTable(this,'xrtbl')"></div>
-  <table id="xrtbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th>Tier</th><th class="num">Health</th><th class="num">Renewal ARR</th><th class="num">ARR at risk</th><th class="num">Open CTAs</th><th>TAP status</th><th>Escalation</th><th class="num">Logged activity</th></tr></thead><tbody>
-  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b></td><td>${esc(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${row.Health}</td><td class="num">${fmtMoney(row.RenewalARR)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${esc(row.TapStatus||'—')}</td><td>${esc(row.EscalationStatus||'—')}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
+  <table id="xrtbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th>Tier</th><th class="num">Health</th><th class="num">Total Contract Value</th><th class="num">ARR at risk</th><th class="num">Open CTAs</th><th>TAP status</th><th>Escalation</th><th class="num">Logged activity</th></tr></thead><tbody>
+  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b> <span class="tag ${hueFor(row.State||'—')}">${esc(row.State||'—')}</span></td><td>${ownerCell(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${row.Health}</td><td class="num">${fmtMoney(row.TotalContractValue)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${esc(row.TapStatus||'—')}</td><td>${esc(row.EscalationStatus||'—')}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
   </tbody></table>
   </div>`;
 }
@@ -1066,8 +1982,8 @@ function viewHierarchy(){
     html+=`<div class="treewrap">`+kids.map(k=>{
       const r=k.r, isLeaf=Object.keys(k.node.children||{}).length===0;
       return `<div class="node"><div class="nhead" onclick="setScope('${k.node.id}')">
-        <div><span class="nname">${esc(k.node.name)}</span> <span class="ntitle">${esc(k.node.title||'')}</span></div>
-        <div class="metric"><b>Renewal ARR</b>${fmtMoney(r.arr)}</div>
+        <div>${avatarChip(k.node.name)} <span class="nname">${esc(k.node.name)}</span> <span class="ntitle">${esc(k.node.title||'')}</span></div>
+        <div class="metric"><b>Total Contract Value</b>${fmtMoney(r.arr)}</div>
         <div class="metric"><b>At risk</b><span style="color:var(--red)">${fmtMoney(r.risk)}</span></div>
         <div class="metric"><b>Health</b>${healthCell(r.health)}</div>
         <div class="metric"><b>${isLeaf?'Accounts':'Reports'}</b>${isLeaf?r.n:Object.keys(k.node.children).length}</div>
@@ -1082,23 +1998,70 @@ function viewHierarchy(){
   return html;
 }
 function accountTable(accts){
-  return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th class="num">Lifetime $</th><th class="num">Close</th><th class="num">Cases</th><th>CSAT</th><th>Health</th><th>Tier</th></tr></thead><tbody>
-  ${accts.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${esc(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td>${opportunityPill(a)}</td></tr>`).join('')}
+  return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Annualized Revenue</th><th class="num">Close</th><th class="num">Cases</th><th>CSAT</th><th>Health</th><th>Tier</th></tr></thead><tbody>
+  ${accts.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td>${opportunityPill(a)}</td></tr>`).join('')}
   </tbody></table>`;
 }
 
 // ---- Renewals ----
 let renewSort={k:'riskARR',dir:-1};
-function viewRenewals(accts){
-  const rows=[...accts].sort((a,b)=>{ const x=a[renewSort.k], y=b[renewSort.k]; const xn=x==null?-Infinity:x, yn=y==null?-Infinity:y; return renewSort.dir*((xn>yn)?1:(xn<yn)?-1:0); });
+const RENEW_SORT_FIELDS=[['dclose','Days to close'],['renewalAmount','Total Contract Value'],['ltv','Annualized Revenue'],['riskARR','ARR at risk'],['tier','Account Tier']];
+function renewSortBar(){
+  return `<div class="sortbar">
+    <label class="mini" for="renewSortField">Sort by</label>
+    <select class="select sm" id="renewSortField" onchange="setRenewSortField(this.value)">${RENEW_SORT_FIELDS.map(([k,l])=>`<option value="${k}"${renewSort.k===k?' selected':''}>${esc(l)}</option>`).join('')}</select>
+    <button type="button" class="btn sm" onclick="setRenewSortDir()" title="Toggle sort direction">${renewSort.k==='tier'?(renewSort.dir<0?'Tier 4 → 1 ▼':'Tier 1 → 4 ▲'):(renewSort.dir<0?'High → Low ▼':'Low → High ▲')}</button>
+  </div>`;
+}
+function setRenewSortField(k){ renewSort.k=k; if(renewSort.dir==null) renewSort.dir=-1; route(); }
+function setRenewSortDir(){ renewSort.dir*=-1; route(); }
+function setRenewSort(k){ if(renewSort.k===k)renewSort.dir*=-1; else {renewSort.k=k;renewSort.dir=(k==='name')?1:-1;} route(); }
+
+// ---- Account Tier (contract-value ranking) ----
+// A second, independent axis from Segment (which is size-based): purely a
+// function of this renewal's Total Contract Value, so the same logic applies
+// whether the account is Enterprise or SMB. Surfaced as a sort/group option in
+// Renewals & Contract Value rather than its own tab — thresholds are business
+// rules, kept in one place so they're easy to retune.
+const CONTRACT_TIER_THRESHOLDS={t1:250000,t2:75000,t3:20000};
+const CONTRACT_TIER_LABELS={1:'Tier 1 · Strategic',2:'Tier 2 · Maintain',3:'Tier 3 · Below-average',4:'Tier 4 · Reactive'};
+function contractTier(a){
+  const v=a.renewalAmount||0;
+  if(v>=CONTRACT_TIER_THRESHOLDS.t1) return 1;
+  if(v>=CONTRACT_TIER_THRESHOLDS.t2) return 2;
+  if(v>=CONTRACT_TIER_THRESHOLDS.t3) return 3;
+  return 4;
+}
+function renewTableHead(){
   const sc=(k,l)=>`<th class="num" onclick="setRenewSort('${k}')">${l}${renewSort.k===k?(renewSort.dir<0?' ▼':' ▲'):''}</th>`;
-  return `<div class="card"><h3>Renewal & risk triage <span class="hint">${accts.length} accounts · prioritized by revenue exposure</span></h3>
+  return `<tr><th onclick="setRenewSort('name')">Account</th><th>Owner</th><th>Stage</th>${sc('dclose','Days to close')}${sc('renewalAmount','Total Contract Value')}${sc('ltv','Annualized Revenue')}${sc('openCases','Open cases')}${sc('csat','CSAT')}${sc('readiness','Renewal ready')}${sc('riskARR','ARR at risk')}<th>Health</th></tr>`;
+}
+function renewRowHtml(a){
+  const st=a.opps[0]?a.opps[0].stage:''; const late=a.dclose<=90&&EARLY.has(st);
+  return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${esc(st)}${late?' <span class="pill p-red">behind</span>':''}</td><td class="num">${a.dclose>9000?'—':a.dclose}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td class="num">${readyPill(a.readiness)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td><td>${healthCell(a.health)}</td></tr>`;
+}
+function viewRenewals(accts){
+  if(renewSort.k==='tier'){
+    const groups={1:[],2:[],3:[],4:[]};
+    accts.forEach(a=>groups[contractTier(a)].push(a));
+    const order = renewSort.dir<0 ? [4,3,2,1] : [1,2,3,4];
+    const body = order.map(t=>{
+      const list=[...groups[t]].sort((a,b)=>(b.renewalAmount||0)-(a.renewalAmount||0));
+      if(!list.length) return '';
+      return `<div class="tier-group"><h4 class="tier-h">${esc(CONTRACT_TIER_LABELS[t])} <span class="hint">${list.length} account${list.length===1?'':'s'} · ${fmtMoney(list.reduce((s,a)=>s+(a.renewalAmount||0),0))} TCV</span></h4>
+      <table><thead>${renewTableHead()}</thead><tbody>${list.map(renewRowHtml).join('')}</tbody></table></div>`;
+    }).join('');
+    return `<div class="card"><h3>Renewal & risk triage <span class="hint">${accts.length} accounts · grouped by contract-value tier</span>${renewSortBar()}</h3>
+    <div class="searchbar"><input id="rsearch" placeholder="Filter accounts…" oninput="filterTable(this,'rtbl')"></div>
+    <div id="rtbl">${body||'<p class="mini">No accounts in scope.</p>'}</div></div>`;
+  }
+  const rows=[...accts].sort((a,b)=>{ const x=a[renewSort.k], y=b[renewSort.k]; const xn=x==null?-Infinity:x, yn=y==null?-Infinity:y; return renewSort.dir*((xn>yn)?1:(xn<yn)?-1:0); });
+  return `<div class="card"><h3>Renewal & risk triage <span class="hint">${accts.length} accounts · prioritized by revenue exposure</span>${renewSortBar()}</h3>
   <div class="searchbar"><input id="rsearch" placeholder="Filter accounts…" oninput="filterTable(this,'rtbl')"></div>
-  <table id="rtbl"><thead><tr><th onclick="setRenewSort('name')">Account</th><th>Owner</th><th>Stage</th>${sc('dclose','Days to close')}${sc('renewalAmount','Renewal ARR')}${sc('ltv','Lifetime $')}${sc('openCases','Open cases')}${sc('csat','CSAT')}${sc('readiness','Renewal ready')}${sc('riskARR','ARR at risk')}<th>Health</th></tr></thead><tbody>
-  ${rows.map(a=>{const st=a.opps[0]?a.opps[0].stage:'';const late=a.dclose<=90&&EARLY.has(st);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${esc(a.ownerName)}</td><td>${esc(st)}${late?' <span class="pill p-red">behind</span>':''}</td><td class="num">${a.dclose>9000?'—':a.dclose}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td class="num">${readyPill(a.readiness)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td><td>${healthCell(a.health)}</td></tr>`;}).join('')}
+  <table id="rtbl"><thead>${renewTableHead()}</thead><tbody>
+  ${rows.map(renewRowHtml).join('')}
   </tbody></table></div>`;
 }
-function setRenewSort(k){ if(renewSort.k===k)renewSort.dir*=-1; else {renewSort.k=k;renewSort.dir=(k==='name')?1:-1;} route(); }
 
 // ---- Escalations ----
 let escFilter='active';
@@ -1225,7 +2188,7 @@ function viewEsc(accts){
   ${escRollupCard(rollupBase)}
   ${escAnalyticsCard(escAnalytics(accts))}
   <div class="card"><table><thead><tr><th>Account</th><th>Issue</th><th>Severity</th><th>Reason</th><th>Product</th><th class="num">Days open</th><th>Status</th><th class="num">ARR at risk</th><th></th></tr></thead><tbody>
-  ${list.map(e=>`<tr><td onclick="openAcct('${e.acctId}')" style="cursor:pointer"><b>${esc(e.acct.name)}</b><div class="mini">${esc(e.acct.ownerName)}</div></td><td>${esc(e.issue)}</td><td>${sevPill(e.sev)}</td><td>${escReasonSelect(e)}</td><td>${escProductSelect(e)}</td><td class="num">${e.daysOpen==null?'—':`<span class="${e.daysOpen>=14?'neg':''}">${e.daysOpen}d${e.daysOpen>=14?' ⚠':''}</span>`}</td><td>${statusPill(e.status)}</td><td class="num">${fmtMoney(e.acct.riskARR)}</td><td class="row-actions">${e.status!=='In Progress'&&e.status!=='Resolved'?`<button class="btn" onclick="event.stopPropagation();setEscStatus('${e.acctId}','In Progress')">Start</button>`:''}${e.status!=='Resolved'?`<button class="btn primary" onclick="event.stopPropagation();setEscStatus('${e.acctId}','Resolved')">Resolve</button>`:`<button class="btn" onclick="event.stopPropagation();setEscStatus('${e.acctId}','Open')">Reopen</button>`}</td></tr>`).join('')}
+  ${list.map(e=>`<tr><td onclick="openAcct('${e.acctId}')" style="cursor:pointer"><b>${esc(e.acct.name)}</b> ${stateTag(e.acct)}<div class="mini">${ownerCell(e.acct.ownerName)}</div></td><td>${esc(e.issue)}</td><td>${sevPill(e.sev)}</td><td>${escReasonSelect(e)}</td><td>${escProductSelect(e)}</td><td class="num">${e.daysOpen==null?'—':`<span class="${e.daysOpen>=14?'neg':''}">${e.daysOpen}d${e.daysOpen>=14?' ⚠':''}</span>`}</td><td>${statusPill(e.status)}</td><td class="num">${fmtMoney(e.acct.riskARR)}</td><td class="row-actions">${e.status!=='In Progress'&&e.status!=='Resolved'?`<button class="btn" onclick="event.stopPropagation();setEscStatus('${e.acctId}','In Progress')">Start</button>`:''}${e.status!=='Resolved'?`<button class="btn primary" onclick="event.stopPropagation();setEscStatus('${e.acctId}','Resolved')">Resolve</button>`:`<button class="btn" onclick="event.stopPropagation();setEscStatus('${e.acctId}','Open')">Reopen</button>`}</td></tr>`).join('')}
   </tbody></table>
   ${list.length?'':'<p class="mini">Nothing here — no escalations match this scope/filter.</p>'}</div>`;
 }
@@ -1398,8 +2361,8 @@ function viewPlans(accts){
   else if(!logosShown.length){ html+=`<p class="mini">No new logos match this filter.</p>`; }
   else{
     const sorted=[...logosShown].sort((a,b)=> (b.firstPurchase||'').localeCompare(a.firstPurchase||''));
-    html+=`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">First purchase</th><th class="num">Lifetime $</th><th>Health</th><th>Plan</th><th></th></tr></thead><tbody>
-    ${sorted.map(a=>{const p=plans[a.id];const prog=planProgress(p);return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${esc(a.ownerName)}</td><td class="num">${esc(a.firstPurchase||'—')}</td><td class="num">${fmtMoney(a.ltv)}</td><td>${healthCell(a.health)}</td><td>${p?`<span class="pill p-green">Plan · ${prog}%</span>`:'<span class="pill p-gray">None</span>'}</td><td class="row-actions">${p?`<button class="btn sm" onclick="openPlan('${a.id}')">Open</button>`:`<button class="btn primary sm" onclick="createOrOpenPlan('${a.id}')">Generate</button>`}</td></tr>`;}).join('')}
+    html+=`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">First purchase</th><th class="num">Annualized Revenue</th><th>Health</th><th>Plan</th><th></th></tr></thead><tbody>
+    ${sorted.map(a=>{const p=plans[a.id];const prog=planProgress(p);return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${esc(a.firstPurchase||'—')}</td><td class="num">${fmtMoney(a.ltv)}</td><td>${healthCell(a.health)}</td><td>${p?`<span class="pill p-green">Plan · ${prog}%</span>`:'<span class="pill p-gray">None</span>'}</td><td class="row-actions">${p?`<button class="btn sm" onclick="openPlan('${a.id}')">Open</button>`:`<button class="btn primary sm" onclick="createOrOpenPlan('${a.id}')">Generate</button>`}</td></tr>`;}).join('')}
     </tbody></table>`;
   }
   html+=`</div>`;
@@ -1409,8 +2372,8 @@ function viewPlans(accts){
   if(plansKpiFilter==='dueSoon') custom=custom.filter(p=>planDueSoonCount(p)>0);
   if(custom.length){
     html+=`<div class="card"><h3>Other active plans <span class="hint">custom plans on established accounts</span></h3>
-    <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th>Progress</th><th></th></tr></thead><tbody>
-    ${custom.map(p=>{const a=STATE.accounts.find(x=>x.id===p.acctId);const prog=planProgress(p);return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b></td><td>${esc(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td><div class="progress" style="width:120px"><i style="width:${prog}%"></i></div><span class="mini">${prog}%</span></td><td><button class="btn sm" onclick="openPlan('${a.id}')">Open</button></td></tr>`;}).join('')}
+    <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th>Progress</th><th></th></tr></thead><tbody>
+    ${custom.map(p=>{const a=STATE.accounts.find(x=>x.id===p.acctId);const prog=planProgress(p);return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td><div class="progress" style="width:120px"><i style="width:${prog}%"></i></div><span class="mini">${prog}%</span></td><td><button class="btn sm" onclick="openPlan('${a.id}')">Open</button></td></tr>`;}).join('')}
     </tbody></table></div>`;
   }
   html+=`<p class="mini" style="margin:2px 4px">Tip: open any account (from any tab) and use <b>Create / open success plan</b> to build a customized plan — it doesn't have to be a new logo.</p>`;
@@ -1421,7 +2384,7 @@ function openPlan(id){
   const p=plans[id]; const a=STATE.accounts.find(x=>x.id===id); if(!p||!a) return;
   const prog=planProgress(p);
   const sheet=$('#sheet');
-  sheet.innerHTML=`<div class="hd"><div><h2>Success Plan — ${esc(a.name)}</h2><div class="mini">Owner ${esc(a.ownerName)} · ${newLogo(a)?'New logo · first purchase '+esc(a.firstPurchase||''):'Established account'} · Renewal ${a.dclose>9000?'—':'in '+a.dclose+'d'}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  sheet.innerHTML=`<div class="hd"><div><h2>Success Plan — ${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)} · ${newLogo(a)?'New logo · first purchase '+esc(a.firstPurchase||''):'Established account'} · Renewal ${a.dclose>9000?'—':'in '+a.dclose+'d'}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
   <div class="bd">
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Progress <span class="hint">${p.milestones.filter(m=>m.done).length} of ${p.milestones.length} milestones complete</span></h3>
       <div class="progress"><i style="width:${prog}%"></i></div>
@@ -1569,8 +2532,8 @@ function viewWork(accts){
   const overdue=items.filter(it=>it.bucket==='overdue');
   const freshItems=items.filter(it=>it.bucket==='new');
   const upcoming=items.filter(it=>it.bucket==='upcoming');
-  const rows=list=>`<table><thead><tr><th>Priority action</th><th>Account</th><th>Owner</th><th class="num">Renewal ARR</th><th>Health</th></tr></thead><tbody>
-    ${list.slice(0,50).map(it=>`<tr onclick="openAcct('${it.a.id}')"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b></td><td>${esc(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
+  const rows=list=>`<table><thead><tr><th>Priority action</th><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th>Health</th></tr></thead><tbody>
+    ${list.slice(0,50).map(it=>`<tr onclick="openAcct('${it.a.id}')"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b> ${stateTag(it.a)}</td><td>${ownerCell(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
     </tbody></table>`;
   const section=(title,hint,list)=> list.length?`<h3 style="margin-top:18px">${esc(title)} <span class="hint">${esc(hint)}</span></h3>${rows(list)}`:'';
   return `<div class="card"><h3>Prioritized worklist <span class="hint">${items.length} actions across scope · grouped overdue → new → upcoming, ranked by urgency then revenue within each</span></h3>
@@ -1764,7 +2727,7 @@ function openCsmImprove(name){
   const insPct=csmTargetPct(o.insights, scoreTargets.insightsPerCsm);
   const grPct=csmTargetPct(o.growthTotal, scoreTargets.growthPerCsm);
   const sheet=$('#sheet');
-  sheet.innerHTML=`<div class="hd"><div><h2>Improve plan — ${esc(name)}</h2><div class="mini">${o.n} accounts · Engagement ${o.engagementPct}% · Insights ${o.insights} · Growth ${fmtMoney(o.growthTotal)} · ${steps.length?steps.length+' action'+(steps.length===1?'':'s'):'on track'}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  sheet.innerHTML=`<div class="hd"><div><h2 style="display:flex;align-items:center;gap:10px">${avatarChip(name)} Improve plan — ${esc(name)}</h2><div class="mini">${o.n} accounts · Engagement ${o.engagementPct}% · Insights ${o.insights} · Growth ${fmtMoney(o.growthTotal)} · ${steps.length?steps.length+' action'+(steps.length===1?'':'s'):'on track'}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
   <div class="bd">
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Score vs target</h3>
       <div class="comp" style="grid-template-columns:1fr auto">
@@ -1809,7 +2772,7 @@ function viewScorecard(accts){
 
   ${needing.length?`<div class="card"><h3>Reps needing attention <span class="hint">${needing.length} below target — top action for each</span></h3>
   <div class="improve-list">${needing.map(o=>{ const top=o.steps[0]; return `<div class="improve-step ${top.sev}">
-    <div class="improve-meta"><b>${esc(o.name)}</b><div class="mini" style="margin-top:4px">${o.steps.length} step${o.steps.length===1?'':'s'}</div></div>
+    <div class="improve-meta">${avatarChip(o.name)} <b>${esc(o.name)}</b><div class="mini" style="margin-top:4px">${o.steps.length} step${o.steps.length===1?'':'s'}</div></div>
     <div class="improve-body"><span class="pill ${top.sev==='high'?'p-red':top.sev==='med'?'p-amber':'p-gray'}">${esc(top.metric)}</span> <b>${esc(top.title)}</b>
       <div class="row-actions" style="margin-top:8px">
         <button class="btn primary sm" onclick="runCsmImproveAction('${attrStr(o.name)}','${attrStr(top.action)}')">${esc(top.btn)}</button>
@@ -1821,7 +2784,7 @@ function viewScorecard(accts){
 
   <div class="card"><h3>All CSMs in scope</h3>
   <table><thead><tr><th>CSM</th><th class="num">Accounts</th><th class="num">Engagement</th><th class="num">Insights (90d)</th><th class="num">NPS</th><th class="num">Renewal (organic)</th><th class="num">Expansion</th><th class="num">Transactional</th><th class="num">Total growth</th><th class="num">Overdue</th><th></th></tr></thead><tbody>
-  ${rows.map(o=>`<tr style="cursor:default"><td><b>${esc(o.name)}</b></td><td class="num">${o.n}</td><td class="num">${o.engagementPct}%${targetBar(o.engagementPct/(scoreTargets.engagementPct||1)*100)}</td><td class="num">${o.insights}${targetBar(o.insights/(scoreTargets.insightsPerCsm||1)*100)}</td><td class="num">${npsRollupPill(o.npsR)}</td><td class="num">${fmtMoney(o.growth.Renewal)}</td><td class="num">${fmtMoney(o.growth.Expansion)}</td><td class="num">${fmtMoney(o.growth.Transactional)}</td><td class="num"><b>${fmtMoney(o.growthTotal)}</b>${targetBar(o.growthTotal/(scoreTargets.growthPerCsm||1)*100)}</td><td class="num">${o.stale.length?`<span class="pill clickable ${o.stale[0].overdue>90?'p-red':'p-amber'}" onclick="openCsmImprove('${attrStr(o.name)}')" title="Open improve plan">${o.stale.length}</span>`:'<span class="pill p-gray">0</span>'}</td><td>${o.needsImprove||o.steps.length?`<button class="btn ${o.needsImprove?'primary':'sm'} sm" onclick="openCsmImprove('${attrStr(o.name)}')">${o.needsImprove?'Improve':'Plan'}</button>`:`<span class="pill p-green">On track</span>`}</td></tr>`).join('')}
+  ${rows.map(o=>`<tr style="cursor:default"><td>${ownerCell(o.name)}</td><td class="num">${o.n}</td><td class="num">${o.engagementPct}%${targetBar(o.engagementPct/(scoreTargets.engagementPct||1)*100)}</td><td class="num">${o.insights}${targetBar(o.insights/(scoreTargets.insightsPerCsm||1)*100)}</td><td class="num">${npsRollupPill(o.npsR)}</td><td class="num">${fmtMoney(o.growth.Renewal)}</td><td class="num">${fmtMoney(o.growth.Expansion)}</td><td class="num">${fmtMoney(o.growth.Transactional)}</td><td class="num"><b>${fmtMoney(o.growthTotal)}</b>${targetBar(o.growthTotal/(scoreTargets.growthPerCsm||1)*100)}</td><td class="num">${o.stale.length?`<span class="pill clickable ${o.stale[0].overdue>90?'p-red':'p-amber'}" onclick="openCsmImprove('${attrStr(o.name)}')" title="Open improve plan">${o.stale.length}</span>`:'<span class="pill p-gray">0</span>'}</td><td>${o.needsImprove||o.steps.length?`<button class="btn ${o.needsImprove?'primary':'sm'} sm" onclick="openCsmImprove('${attrStr(o.name)}')">${o.needsImprove?'Improve':'Plan'}</button>`:`<span class="pill p-green">On track</span>`}</td></tr>`).join('')}
   </tbody></table>
   ${rows.length?'':'<p class="mini">No CSMs with accounts in this scope.</p>'}
   <p class="mini" style="margin-top:12px;color:var(--muted)">Below-target metrics generate an improve plan with concrete next steps (book outreach, log insights, advance renewals, save NPS detractors, clear overdue work). Click <b>Improve</b> for the full plan, or run the top action from the attention list above.</p>
@@ -1860,7 +2823,7 @@ function viewEngagement(accts){
   <div class="card"><h3>Accounts by cadence status <span class="hint">most overdue first${engKpiFilter?' · filtered — click the tile again to clear':''}</span></h3>
   <div class="searchbar"><input id="esearch" placeholder="Filter accounts…" oninput="filterTable(this,'etbl')"></div>
   <table id="etbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th class="num">Last touch</th><th class="num">Required</th><th>Status</th></tr></thead><tbody>
-  ${sorted.map(r=>`<tr onclick="openAcct('${r.a.id}')"><td><b>${esc(r.a.name)}</b></td><td>${esc(r.a.ownerName)}</td><td>${segmentPill(r.a)}</td><td class="num">${r.c.ds==null?'—':r.c.ds+'d ago'}</td><td class="num">every ${r.c.req}d</td><td>${cadencePill(r.a)}</td></tr>`).join('')}
+  ${sorted.map(r=>`<tr onclick="openAcct('${r.a.id}')"><td><b>${esc(r.a.name)}</b> ${stateTag(r.a)}</td><td>${ownerCell(r.a.ownerName)}</td><td>${segmentPill(r.a)}</td><td class="num">${r.c.ds==null?'—':r.c.ds+'d ago'}</td><td class="num">every ${r.c.req}d</td><td>${cadencePill(r.a)}</td></tr>`).join('')}
   </tbody></table>${sorted.length?'':'<p class="mini">No accounts match this filter.</p>'}</div>`;
 }
 
@@ -1887,7 +2850,7 @@ function viewCaseWatch(accts){
   <div class="kpis" style="margin:14px 0">${kpis.map(k=>`<div class="kpi clickable${/Blocked/.test(k[0])?' accent':''}${caseKpiFilter===k[3]&&k[3]?' selected':''}" onclick="setCaseKpi(${k[3]?`'${k[3]}'`:'null'})"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   ${caseKpiFilter?`<p class="mini" style="margin:-4px 0 12px">Filtered to accounts with ${caseKpiFilter==='blocked'?'blocked':'aging'} cases · <a href="#" onclick="setCaseKpi('${caseKpiFilter}');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></p>`:''}
   <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Blocked</th><th class="num">Aging</th><th class="num">Total open</th><th>Health</th></tr></thead><tbody>
-  ${sorted.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b></td><td>${esc(a.ownerName)}</td><td class="num">${a.casesBlocked?`<span class="pill p-red">${a.casesBlocked}</span>`:'—'}</td><td class="num">${a.casesAging?`<span class="pill p-amber">${a.casesAging}</span>`:'—'}</td><td class="num">${a.openCases}</td><td>${healthCell(a.health)}</td></tr>`).join('')}
+  ${sorted.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${a.casesBlocked?`<span class="pill p-red">${a.casesBlocked}</span>`:'—'}</td><td class="num">${a.casesAging?`<span class="pill p-amber">${a.casesAging}</span>`:'—'}</td><td class="num">${a.openCases}</td><td>${healthCell(a.health)}</td></tr>`).join('')}
   </tbody></table>
   ${sorted.length?'':'<p class="mini">Clear queue — no blocked or aging cases in this scope.</p>'}</div>`;
 }
@@ -1929,7 +2892,7 @@ function viewUsage(accts){
   <div class="card"><h3>Accounts by adoption <span class="hint">lowest adoption first${usageKpiFilter?' · filtered — click the tile again to clear':''}</span></h3>
   <div class="searchbar"><input id="usearch" placeholder="Filter accounts…" oninput="filterTable(this,'utbl')"></div>
   <table id="utbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th class="num">Adoption</th><th class="num">Active / Licensed</th><th class="num">Trend</th><th class="num">To goal</th><th class="num">Synced</th></tr></thead><tbody>
-  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b></td><td>${esc(a.ownerName)}</td><td>${segmentPill(a)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
+  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${segmentPill(a)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
   </tbody></table>
   ${sorted.length?'':'<p class="mini">No accounts with usage data match this filter.</p>'}
   <p class="mini" style="margin-top:12px;color:var(--muted)">Source: product-analytics Snowflake → Sigma, modeled as a periodic export. Swap in the live connection later — nothing above needs to change since it reads the same <code>ProductUsage__c</code> shape.</p>
@@ -1978,10 +2941,10 @@ function viewTap(accts){
   ];
   return `<div class="card"><h3>TAP Refreshes <span class="hint">hardware warranty refresh — due at the 2.5-year mark of a 5-year contract, per CS-leadership stakeholder guidance — click a tile to filter</span></h3>
   <p class="mini">Tracks every account with Axon hardware (body cameras, TASER, fleet, interview room, cartridges, drones) on file. TAP refresh is a distinct hardware-lifecycle motion from a software renewal — each account below gets a standardized checklist so nothing falls through between "it's due" and "it's done."</p>
-  <div class="kpis" style="margin:14px 0">${kpis.map(k=>`<div class="kpi clickable${/Overdue/.test(k[0])?' accent':''}${k[3]&&tapKpiFilter===k[3]?' selected':''}" onclick="setTapKpi(${k[3]?`'${k[3]}'`:'null'})"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
+  <div class="kpis" style="margin:14px 0">${kpis.map(k=>`<div class="kpi clickable${k[3]==='overdue'?' risk-red':k[3]==='duesoon'?' risk-amber':''}${k[3]&&tapKpiFilter===k[3]?' selected':''}" onclick="setTapKpi(${k[3]?`'${k[3]}'`:'null'})"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   ${tapKpiFilter?`<p class="mini" style="margin:-4px 0 12px">Filtered to <b>${tapKpiFilter==='overdue'?'overdue':'due within 90 days'}</b> · <a href="#" onclick="setTapKpi('${tapKpiFilter}');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></p>`:''}
   <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Hardware purchase</th><th class="num">Refresh due</th><th class="num">Contract end</th><th>Status</th><th></th></tr></thead><tbody>
-  ${sorted.map(a=>{ const t=tapState[a.id]; const prog=t?Math.round(t.steps.filter(s=>s.done).length/t.steps.length*100):0; return `<tr onclick="openTap('${a.id}')"><td><b>${esc(a.name)}</b></td><td>${esc(a.ownerName)}</td><td class="num">${esc(a.tapHwStart||'—')}</td><td class="num">${esc(a.tapRefreshDate||'—')}${a.tapDays!=null?` <span class="mini">(${a.tapDays<0?Math.abs(a.tapDays)+'d overdue':a.tapDays+'d'})</span>`:''}</td><td class="num">${esc(a.tapContractEnd||'—')}</td><td>${tapStatusPill(a)}</td><td class="mini">${t?prog+'% checklist':''}</td></tr>`; }).join('')}
+  ${sorted.map(a=>{ const t=tapState[a.id]; const prog=t?Math.round(t.steps.filter(s=>s.done).length/t.steps.length*100):0; return `<tr onclick="openTap('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${esc(a.tapHwStart||'—')}</td><td class="num">${esc(a.tapRefreshDate||'—')}${a.tapDays!=null?` <span class="mini">(${a.tapDays<0?Math.abs(a.tapDays)+'d overdue':a.tapDays+'d'})</span>`:''}</td><td class="num">${esc(a.tapContractEnd||'—')}</td><td>${tapStatusPill(a)}</td><td class="mini">${t?prog+'% checklist':''}</td></tr>`; }).join('')}
   </tbody></table>
   ${sorted.length?'':'<p class="mini">No tracked TAP contracts match this scope/filter.</p>'}
   ${accts.length-tracked.length>0?`<p class="mini" style="margin-top:10px;color:var(--muted)">${accts.length-tracked.length} account(s) in scope have no Axon hardware on file — TAP refresh doesn't apply to software-only accounts.</p>`:''}
@@ -1992,7 +2955,7 @@ function openTap(acctId){
   const t=ensureTapState(acctId);
   const prog=Math.round(t.steps.filter(s=>s.done).length/t.steps.length*100);
   const sheet=$('#sheet');
-  sheet.innerHTML=`<div class="hd"><div><h2>TAP Refresh — ${esc(a.name)}</h2><div class="mini">Owner ${esc(a.ownerName)} · Hardware purchased ${esc(a.tapHwStart||'—')} · ${tapStatusPill(a)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  sheet.innerHTML=`<div class="hd"><div><h2>TAP Refresh — ${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)} · Hardware purchased ${esc(a.tapHwStart||'—')} · ${tapStatusPill(a)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
   <div class="bd">
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Refresh timeline</h3>
       <div class="comp" style="grid-template-columns:1fr auto">
@@ -2117,7 +3080,11 @@ function activityCard(a){
 // ---- Purchase history & products ----
 async function loadAcctIntel(id){
   const dBox=$('#acctDeals'), pBox=$('#acctProducts');
-  if(intelCache[id]){ if(dBox)dBox.innerHTML=intelCache[id].deals; if(pBox)pBox.innerHTML=intelCache[id].prod; return; }
+  if(intelCache[id]){
+    if(dBox)dBox.innerHTML=intelCache[id].deals; if(pBox)pBox.innerHTML=intelCache[id].prod;
+    drawAcctDealsChart(intelCache[id].dealsRaw); drawAcctProdChart(intelCache[id].famsRaw);
+    return;
+  }
   try{
     const [deals,fams,skus]=await Promise.all([
       soql(`SELECT Name,Amount,CloseDate,StageName FROM Opportunity WHERE IsWon=true AND AccountId='${id}' ORDER BY CloseDate DESC LIMIT 8`),
@@ -2135,8 +3102,9 @@ async function loadAcctIntel(id){
       if(skus.length) prodHtml+=`<p class="mini" style="margin-top:12px"><b>Top individual items purchased:</b><br>${skus.map(s=>esc(s.n)+' — '+fmtMoney(s.amt)).join('<br>')}</p>`;
       prodHtml+=`<p class="mini" style="margin-top:8px;color:var(--muted)">Grouped by Product2.Family across all closed-won line items.</p>`;
     }
-    intelCache[id]={deals:dealsHtml,prod:prodHtml};
+    intelCache[id]={deals:dealsHtml,prod:prodHtml,dealsRaw:deals,famsRaw:fams};
     if(dBox)dBox.innerHTML=dealsHtml; if(pBox)pBox.innerHTML=prodHtml;
+    drawAcctDealsChart(deals); drawAcctProdChart(fams);
   }catch(e){ if(dBox)dBox.innerHTML='<div class="err">Couldn\u2019t load purchase history — '+esc(e.message||e)+'</div>'; if(pBox)pBox.innerHTML=''; }
 }
 
@@ -2155,7 +3123,7 @@ function usageCard(a){
   const cp=commissionPct(a);
   const prods=(u.products||[]).slice().sort((x,y)=>(y.pct||0)-(x.pct||0));
   return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Usage &amp; adoption <span class="hint">${adoptionPill(a)}${u.sync?` · synced ${esc(u.sync)}`:''}</span></h3>
-    <p class="mini">Active users vs. what's provisioned, from the product-analytics export. "Adopting" is defined as ≥ <b>${adoptionCfg.adoptingPct}%</b> active (editable in the <a href="#" onclick="closeSheet();setTab('usage');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">Usage &amp; Adoption</a> tab).</p>
+    <p class="mini">Active users vs. what's provisioned, from the product-analytics export. "Adopting" is defined as ≥ <b>${adoptionCfg.adoptingPct}%</b> active (editable in the <a href="#" onclick="setTab('usage');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">Usage &amp; Adoption</a> tab).</p>
     <div class="kpis" style="margin:12px 0">
       <div class="kpi"><div class="l">Adoption</div><div class="v" style="color:${col}">${u.adoptionPct}%</div><div class="d">${ADOPT_META[tier][1]}</div></div>
       <div class="kpi"><div class="l">Active seats</div><div class="v">${(u.active||0).toLocaleString()}</div><div class="d">of ${(u.licensed||0).toLocaleString()} licensed</div></div>
@@ -2177,8 +3145,22 @@ function usageCard(a){
 }
 
 // ---- Account 360 ----
-function openAcct(id){
-  const a=STATE.accounts.find(x=>x.id===id); if(!a) return;
+// Opening an account is a real page, not a modal — it renders into #app
+// alongside the normal icon-rail/flyout nav, at the same width as any other
+// tab, rather than floating in the .sheet overlay used by TAP/Plan/etc.
+function openAcct(id){ currentAcctView=id; route(); window.scrollTo(0,0); }
+function closeAcctView(){ currentAcctView=null; route(); window.scrollTo(0,0); }
+function renderAcctPage(){
+  const a=STATE.accounts.find(x=>x.id===currentAcctView);
+  if(!a){ currentAcctView=null; route(); return; }
+  $('#scopebar').style.display='none';
+  $('#app').innerHTML=acctPageHtml(a);
+  drawAcctSyncCharts(a);
+  loadAcctComms(a.id);
+  loadAcctIntel(a.id);
+}
+function acctPageHtml(a){
+  const id=a.id;
   a.readiness=readinessScore(a);
   const escStateForAcct=peekEscState(id);
   const escDaysOpen = escStateForAcct.openedAt ? Math.floor((Date.now()-new Date(escStateForAcct.openedAt).getTime())/864e5) : null;
@@ -2188,11 +3170,9 @@ function openAcct(id){
   const resolvedRate = a.lifeCases>0 ? Math.round((a.lifeCases-a.openCases)/a.lifeCases*100) : null;
   const sentColor = a.sentiment==null?'var(--muted)':a.sentTier==='pos'?'var(--green)':a.sentTier==='neu'?'var(--amber)':'var(--red)';
   const hasPlan=!!plans[id];
-  const sheet=$('#sheet');
-  sheet.dataset.acctId=id;
-  sheet.innerHTML=`<div class="hd"><div><h2>${esc(a.name)}</h2><div class="mini">${esc(a.state||'')} · Owner ${esc(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)} ${opportunityPill(a)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)} ${opportunityPill(a)}</div></div><button class="btn sm" onclick="closeAcctView()">← Back</button></div></div>
   <div class="bd">
-    <div class="row-actions" style="margin-bottom:14px">
+    <div class="row-actions" style="margin-bottom:16px">
       <button type="button" class="btn primary" onclick="createOrOpenPlan('${a.id}')">${hasPlan?'Open success plan':'Create success plan'}</button>
       <button type="button" class="btn" onclick="event.stopPropagation();composeEmailForAcct('${a.id}')">Draft email</button>
       <button type="button" class="btn" onclick="document.getElementById('actSubject')&&document.getElementById('actSubject').focus()">Log activity</button>
@@ -2204,8 +3184,8 @@ function openAcct(id){
       <div class="kpi"><div class="l">CSAT</div><div class="v" style="color:${csatColor(c.v)}">${c.v==null?'—':c.v+'%'}</div><div class="d">${c.v==null?'no data':csatFace(c.v)+(c.src==='placeholder'?' · placeholder':' · set by CSM')}</div></div>
       <div class="kpi"><div class="l">NPS</div><div class="v" style="color:${a.nps==null?'var(--muted)':a.nps>=9?'var(--green)':a.nps>=7?'var(--amber)':'var(--red)'}">${a.nps==null?'—':a.nps+'/10'}</div><div class="d">${a.nps==null?'no survey response':npsClassify(a.nps)+(a.npsDate?' · '+esc(a.npsDate):'')}</div></div>
       <div class="kpi"><div class="l">Sentiment</div><div class="v" style="color:${sentColor}">${a.sentiment==null?'—':a.sentiment}</div><div class="d">${sentPill(a)}</div></div>
-      <div class="kpi"><div class="l">Lifetime value</div><div class="v">${fmtMoney(a.ltv)}</div><div class="d">${a.pastDeals} closed-won deals</div></div>
-      <div class="kpi"><div class="l">Renewal ARR</div><div class="v">${fmtMoney(a.renewalAmount)}</div><div class="d">${a.dclose>9000?'—':'closes in '+a.dclose+' days'}</div></div>
+      <div class="kpi"><div class="l">Annualized revenue</div><div class="v">${fmtMoney(a.ltv)}</div><div class="d">${a.pastDeals} closed-won deals</div></div>
+      <div class="kpi"><div class="l">Total Contract Value</div><div class="v">${fmtMoney(a.renewalAmount)}</div><div class="d">${a.dclose>9000?'—':'closes in '+a.dclose+' days'}</div></div>
       <div class="kpi"><div class="l">Open cases</div><div class="v">${a.openCases}</div><div class="d">${a.highCases} high/urgent</div></div>
       <div class="kpi${(a.casesBlocked||a.casesAging)?' accent':''}"><div class="l">Blocked / Aging</div><div class="v">${a.casesBlocked||0} / ${a.casesAging||0}</div><div class="d">cases to escalate</div></div>
       <div class="kpi"><div class="l">Growth (all-time)</div><div class="v">${fmtMoney((a.growth&&(a.growth.Renewal+a.growth.Expansion+a.growth.Transactional))||0)}</div><div class="d">Renewal/Expansion/Transactional</div></div>
@@ -2223,9 +3203,10 @@ function openAcct(id){
       </div>
     </details></div>
 
-    ${usageCard(a)}
+    <div class="acct-grid">
+    <div class="full">${usageCard(a)}</div>
 
-    ${teamRosterCard(a)}
+    <div class="full">${teamRosterCard(a)}</div>
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Customer satisfaction (CSAT) <span class="hint">placeholder — set a real score or connect surveys later</span></h3>
       <div class="csat-wrap">
@@ -2248,15 +3229,17 @@ function openAcct(id){
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Purchase history & lifetime value <span class="hint">all closed-won opportunities</span></h3>
       <div class="comp" style="grid-template-columns:1fr auto;margin-bottom:12px">
-        <div>Lifetime value (closed-won)</div><div class="pos">${fmtFull(a.ltv)}</div>
+        <div>Annualized revenue (closed-won)</div><div class="pos">${fmtFull(a.ltv)}</div>
         <div>Closed-won deals</div><div><b>${a.pastDeals}</b></div>
         <div>First purchase</div><div><b>${a.firstPurchase?esc(a.firstPurchase):'—'}</b></div>
         <div>Most recent purchase</div><div><b>${a.lastPurchase?esc(a.lastPurchase):'—'}</b></div>
       </div>
+      <div class="chartbox" style="height:220px;margin-bottom:14px"><canvas id="acctDealsChart"></canvas></div>
       <div id="acctDeals"><div class="mini">Loading recent deals…</div></div>
     </div>
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Products purchased <span class="hint">by spend, from closed-won line items</span></h3>
+      <div class="chartbox" style="height:220px;margin-bottom:14px"><canvas id="acctProdChart"></canvas></div>
       <div id="acctProducts"><div class="mini">Loading products…</div></div>
     </div>
 
@@ -2269,7 +3252,7 @@ function openAcct(id){
 
     ${surveyCard(a)}
 
-    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Resources &amp; guides <span class="hint">shared library — <a href="#" onclick="closeSheet();setTab('resources');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">manage in Resource Library</a></span></h3>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Resources &amp; guides <span class="hint">shared library — <a href="#" onclick="setTab('resources');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">manage in Resource Library</a></span></h3>
       ${resources.length?`<div class="reslist">${resources.map(r=>`<div class="resrow">${catTag(r.category,'margin-right:8px')}<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a></div>`).join('')}</div>`:'<p class="mini">No resources in the library yet.</p>'}
     </div>
 
@@ -2277,6 +3260,7 @@ function openAcct(id){
       ${a.sentiment==null
         ? '<p class="mini">No support-case history on record for this account.</p>'
         : `<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px"><div style="font-size:34px;font-weight:800;color:${sentColor};font-variant-numeric:tabular-nums">${a.sentiment}</div><div>${sentPill(a)}<div class="mini" style="margin-top:4px">0 = heavy friction · 100 = smooth</div></div></div>
+        <div class="chartbox" style="height:200px;margin-bottom:14px"><canvas id="acctCaseChart"></canvas></div>
         <div class="comp" style="grid-template-columns:1fr auto">
           <div>Lifetime support cases</div><div><b>${a.lifeCases.toLocaleString()}</b></div>
           <div>High / urgent tickets</div><div class="${a.lifeHigh>0?'neg':''}">${a.lifeHigh.toLocaleString()} (${Math.round(a.lifeHigh/a.lifeCases*100)}%)</div>
@@ -2286,7 +3270,10 @@ function openAcct(id){
         </div>`}
     </div>
 
-    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Health breakdown <span class="hint">why this number</span></h3><div class="comp"><div><b>Base</b></div><div class="pos">100</div>${compRows}<div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>Score</b></div><div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>${a.health}</b></div></div></div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Health breakdown <span class="hint">why this number</span></h3>
+      <div class="chartbox" style="height:200px;margin-bottom:14px"><canvas id="acctHealthChart"></canvas></div>
+      <div class="comp"><div><b>Base</b></div><div class="pos">100</div>${compRows}<div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>Score</b></div><div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>${a.health}</b></div></div></div>
+    </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Open renewals</h3><table><tbody>${opps.map(o=>`<tr style="cursor:default"><td>${esc(o.name)}</td><td>${esc(o.stage)}</td><td class="num">${fmtMoney(o.amount)}</td><td class="num">${esc(o.close)}</td></tr>`).join('')}</tbody></table></div>
     ${activityCard(a)}
     <div class="card" id="acctEscalation" style="box-shadow:none;margin:0"><h3>Escalation <span class="hint">${escDaysOpen!=null?escDaysOpen+'d open':''}${escDaysOpen>=14?' · stale':''}</span></h3>
@@ -2312,11 +3299,8 @@ function openAcct(id){
       <div class="tl" style="margin-top:12px">${(escStateForAcct.log&&escStateForAcct.log.length)?escStateForAcct.log.slice().reverse().map(l=>`<div class="ev"><div class="t">${new Date(l.t).toLocaleString()}</div><div>${esc(l.note)}</div></div>`).join(''):'<span class="mini">No updates logged yet.</span>'}</div>
     </div>
   </div>`;
-  showOverlay();
-  loadAcctComms(a.id);
-  loadAcctIntel(a.id);
 }
-function showOverlay(){ const o=$('#overlay'); if(o) o.classList.add('show'); const s=$('#sheet'); if(s&&s.parentElement) s.parentElement.scrollTop=0; }
+function showOverlay(){ const o=$('#overlay'); if(o) o.classList.add('show'); const s=$('#sheet'); if(s&&s.parentElement) s.parentElement.scrollTop=0; wrapWideTables(); }
 function closeSheet(){ const o=$('#overlay'); if(o) o.classList.remove('show'); }
 (function bindOverlayClose(){
   const o=$('#overlay');
@@ -2424,7 +3408,7 @@ function bulkCtaCard(accts){
     </div>
     <div class="row-actions" style="margin-bottom:6px"><b class="mini">${cand.length} account${cand.length===1?'':'s'} match</b><button class="btn sm" onclick="bulkSelectAll(true)">Select all</button><button class="btn sm" onclick="bulkSelectAll(false)">Clear</button></div>
     <div id="bulkCtaList" class="bulk-list">
-      ${cand.length?cand.map(a=>`<label class="bulk-row"><input type="checkbox" value="${a.id}" checked><span class="bulk-name">${esc(a.name)}</span><span class="mini">${esc(a.ownerName)} · ${segmentPill(a)} ${tierPill(a.tier)} · renewal ${a.dclose>9000?'—':a.dclose+'d'}</span></label>`).join(''):'<p class="mini">No accounts match these filters in the current scope.</p>'}
+      ${cand.length?cand.map(a=>`<label class="bulk-row"><input type="checkbox" value="${a.id}" checked><span class="bulk-name">${esc(a.name)} ${stateTag(a)}</span><span class="mini">${ownerCell(a.ownerName)} · ${segmentPill(a)} ${tierPill(a.tier)} · renewal ${a.dclose>9000?'—':a.dclose+'d'}</span></label>`).join(''):'<p class="mini">No accounts match these filters in the current scope.</p>'}
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px">
       <select class="select" id="bulkCtaType">${CTA_TYPES.map(t=>`<option>${t}</option>`).join('')}</select>
@@ -3039,7 +4023,7 @@ window.boot=boot; window.restart=restart;
   }
 })();
 
-document.querySelectorAll('#tabs button').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
+renderNav();
 Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWeights,resetWeights,filterTable,toggleComm,addEscNote,setTab,
   setEscStatus,
   startEscalation,setEscReason,setEscProduct,toggleEscStep,

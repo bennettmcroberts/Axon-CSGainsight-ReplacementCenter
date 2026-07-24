@@ -32,6 +32,12 @@ class Settings:
         self.mock_seed = int(os.getenv("MOCK_SEED", "42"))
         self.mock_account_count = int(os.getenv("MOCK_ACCOUNT_COUNT", "64"))
         self.port = int(os.getenv("PORT", "8420"))
+        # Google Sheets read-only pilot (NPS/CSAT survey responses via a Google Form).
+        self.google_credentials_path = _clean(os.getenv("GOOGLE_CREDENTIALS_PATH")) or str(
+            BACKEND_DIR / "google_credentials.json"
+        )
+        self.google_sheet_id = _clean(os.getenv("GOOGLE_SHEET_ID")) or "1wNpqWj4vG5BVa-q9k4omC5zHNBlCl3p-u7_ee7qCj3w"
+        self.google_sheet_tab = _clean(os.getenv("GOOGLE_SHEET_TAB")) or "NPS Form Response"
         session_secret = _clean(os.getenv("SESSION_SECRET"))
         if not session_secret:
             session_secret = secrets.token_hex(32)
@@ -46,6 +52,10 @@ class Settings:
     @property
     def salesforce_configured(self) -> bool:
         return bool(self.sf_username and self.sf_password and self.sf_security_token)
+
+    @property
+    def google_sheets_configured(self) -> bool:
+        return os.path.isfile(self.google_credentials_path)
 
     @property
     def effective_mode(self) -> str:

@@ -5,10 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Axon CS Command Center</title>
 <script>!function(){var t=localStorage.getItem('cscc-color-theme');document.documentElement.setAttribute('data-theme',t==='dark'||t==='light'?t:'light')}()</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=20260720d">
+<link rel="stylesheet" href="styles.css?v=20260723z9">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
 <!--AUTH_USER-->
 </head>
@@ -16,7 +13,6 @@
 <header class="top">
   <div class="brand">
     <a href="index.html" class="logo" title="Back to home">
-      <svg class="logo-mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20 2.5 38.2 37.5H1.8L20 2.5Z"/></svg>
       <span class="logo-word">AXON</span>
     </a>
     <div>
@@ -35,29 +31,8 @@
 
 <div class="shell">
   <aside class="side">
-    <nav class="tabs" id="tabs">
-      <button data-tab="home" class="active"><svg class="ic" viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-5H10v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg><span>Home</span></button>
-      <div class="sec sec-blue">Portfolio</div>
-      <button data-tab="overview"><svg class="ic" viewBox="0 0 24 24"><path d="M4 19V5m6 14V9m6 10V3m6 16v-6"/></svg><span>Command Center</span></button>
-      <button data-tab="hierarchy"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3v5M6 21v-4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4M12 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM6 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm12 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></svg><span>Org Drill-down</span></button>
-      <button data-tab="renewals"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.3L3 8M3 3v5h5"/></svg><span>Renewals</span></button>
-      <button data-tab="tap"><svg class="ic" viewBox="0 0 24 24"><path d="M4 4v5h5M20 20v-5h-5M5.5 9A7 7 0 0 1 19 12M18.5 15A7 7 0 0 1 5 12"/></svg><span>TAP Refreshes</span><span class="b" id="tapBadge">0</span></button>
-      <button data-tab="scorecard"><svg class="ic" viewBox="0 0 24 24"><path d="M9 17V9m6 8V5M4 20h16M4 4h4v4H4zm12 0h4v4h-4z"/></svg><span>CSM Scorecard</span></button>
-      <button data-tab="usage"><svg class="ic" viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l4-5 3 3 5-7"/></svg><span>Usage &amp; Adoption</span><span class="b" id="usageBadge">0</span></button>
-      <button data-tab="execreport"><svg class="ic" viewBox="0 0 24 24"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm8 0v6h6M9 13h6M9 17h6M9 9h2"/></svg><span>Executive Report</span></button>
-      <div class="sec sec-amber">Act</div>
-      <button data-tab="ctas"><span>CTAs</span><span class="b" id="ctaBadge">0</span></button>
-      <button data-tab="escalations"><span>Escalations</span><span class="b" id="escBadge">0</span></button>
-      <button data-tab="casewatch"><span>Case Watch</span><span class="b" id="caseBadge">0</span></button>
-      <button data-tab="engagement"><span>Engagement</span><span class="b" id="cadenceBadge">0</span></button>
-      <button data-tab="plans"><span>Success Plans</span></button>
-      <button data-tab="emails"><span>Email Outreach</span></button>
-      <button data-tab="worklist"><span>My Worklist</span></button>
-      <div class="sec sec-violet">Configure</div>
-      <button data-tab="model"><span>Health Model</span></button>
-      <button data-tab="resources"><span>Resource Library</span></button>
-    </nav>
-    <div class="sfoot">Health, sentiment &amp; CSAT computed client-side from live account signals.</div>
+    <nav class="icon-rail" id="iconRail"></nav>
+    <div class="flyout hidden" id="flyout"></div>
   </aside>
 
   <div class="main">
@@ -75,7 +50,6 @@
       </div>
     </div>
 
-    <div class="foot" id="foot"></div>
     </div>
   </div>
 </div>
@@ -85,6 +59,6 @@
 
 <script>window.AXON_THEME=true;</script>
 <script src="/assets/theme.js?v=20260716d"></script>
-<script src="/assets/app.js?v=20260721a"></script>
+<script src="/assets/app.js?v=20260723z9"></script>
 </body>
 </html>
