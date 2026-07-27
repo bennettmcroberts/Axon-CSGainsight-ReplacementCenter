@@ -7,6 +7,8 @@ reading mock data or live Salesforce data.
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -24,6 +26,19 @@ from .sheets_client import SheetsUnavailable, fetch_survey_responses
 from .gmail_client import GmailUnavailable, gmail_configured, send_email
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+# AI-drafted-email hand-off files (see backend/app/main.py's ai-draft endpoints
+# below) - deliberately limited to the 10 NPS/CSAT pilot accounts (same list
+# as TEST10_ACCOUNTS in frontend/app.js) while this stays a manual, Claude
+# Code-in-the-loop feature rather than a live API integration.
+AI_DRAFTS_DIR = BACKEND_DIR / "data" / "ai_drafts"
+AI_DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
+TEST10_ACCOUNTS = [
+    "Springfield Fire & Rescue", "Union City Correctional Facility", "Zionsville Highway Patrol",
+    "Kingsley Fire & Rescue", "Westgate Correctional Facility", "Harborview Fire & Rescue",
+    "Georgetown Public Safety Dept.", "Jasper County Sheriff's Office", "Thornbury Highway Patrol",
+    "Lakewood Correctional Facility",
+]
+_AI_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 # Shared JS, Resource Library pages, and other static assets live under frontend/.
 FRONTEND_ASSETS_DIR = (BACKEND_DIR.parent / "frontend").resolve()
 # Primary UI (Axon Yellow chrome) lives under frontend-axon/.
@@ -62,6 +77,12 @@ class AutomationSendRequest(BaseModel):
     to: str
     subject: str
     bodyHtml: str
+
+
+class AiDraftRequest(BaseModel):
+    accountName: str
+    category: str
+    context: str
 
 
 def require_auth(request: Request) -> dict:
@@ -215,6 +236,45 @@ def automation_send(body: AutomationSendRequest, user: dict = Depends(require_au
 @app.get("/api/automation/status")
 def automation_status(user: dict = Depends(require_auth)):
     return {"configured": gmail_configured()}
+
+
+def _ai_draft_path(request_id: str) -> Path:
+    if not _AI_REQUEST_ID_RE.match(request_id):
+        raise HTTPException(status_code=400, detail="Invalid request id")
+    return AI_DRAFTS_DIR / f"{request_id}.json"
+
+
+@app.post("/api/ai-draft/{request_id}")
+def create_ai_draft_request(request_id: str, body: AiDraftRequest, user: dict = Depends(require_auth)):
+    """Writes a small hand-off file for a human-in-the-loop AI draft: a CSM
+    clicks "Create AI draft" in the browser, which lands here; a Claude Code
+    session (not this backend - no LLM API key is configured) reads pending
+    files under backend/data/ai_drafts/ and writes the drafted subject/body
+    back into the same file, which the frontend then polls for. Deliberately
+    limited to the 10 NPS/CSAT pilot accounts while this stays manual/demo.
+    """
+    if body.accountName not in TEST10_ACCOUNTS:
+        raise HTTPException(status_code=403, detail="AI drafts are limited to the 10 pilot accounts for now")
+    path = _ai_draft_path(request_id)
+    data = {
+        "status": "pending",
+        "requestedAt": datetime.now(timezone.utc).isoformat(),
+        "requestedBy": user["username"],
+        "accountName": body.accountName,
+        "category": body.category,
+        "context": body.context,
+        "draft": None,
+    }
+    path.write_text(json.dumps(data, indent=2))
+    return data
+
+
+@app.get("/api/ai-draft/{request_id}")
+def get_ai_draft_request(request_id: str, user: dict = Depends(require_auth)):
+    path = _ai_draft_path(request_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return json.loads(path.read_text())
 
 
 if FRONTEND_ASSETS_DIR.exists():

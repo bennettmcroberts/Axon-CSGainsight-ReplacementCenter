@@ -8,6 +8,7 @@
   /* Semantic status colors — used for health, risk, charts, pills (not brand chrome) */
   --green:#1a9e5c; --greenbg:rgba(26,158,92,.12);
   --amber:#d4890a; --amberbg:rgba(212,137,10,.12);
+  --orange:#c9631e; --orangebg:rgba(201,99,30,.12);
   --red:#d64545; --redbg:rgba(214,69,69,.1);
   --graybg:#f0f0f0;
   --blue:#2a7de1; --blue-d:#1f66c0; --bluebg:rgba(42,125,225,.1);
@@ -26,6 +27,7 @@ html[data-theme="dark"]{
   --yellow:#ffe600; --yellow-d:#e6cf00; --yellow-ink:#000000;
   --green:#3ddc97; --greenbg:rgba(61,220,151,.14);
   --amber:#ffb84d; --amberbg:rgba(255,184,77,.14);
+  --orange:#ff9152; --orangebg:rgba(255,145,82,.16);
   --red:#ff6b6b; --redbg:rgba(255,107,107,.14);
   --graybg:#1e1e1e;
   --blue:#5ec8ff; --blue-d:#33a9ea; --bluebg:rgba(94,200,255,.14);
@@ -210,6 +212,7 @@ tbody tr:hover{background:rgba(255,230,0,.12)}
 .pill{display:inline-block;padding:4px 11px;font-size:10.5px;font-weight:800;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em;border-radius:999px;border:none}
 .p-green{background:var(--greenbg);color:var(--green)}
 .p-amber{background:var(--amberbg);color:var(--amber)}
+.p-orange{background:var(--orangebg);color:var(--orange)}
 .p-red{background:var(--redbg);color:var(--red)}
 .p-gray{background:var(--graybg);color:#555}
 .p-blue{background:var(--bluebg);color:var(--blue)}
@@ -225,19 +228,21 @@ tbody tr:hover{background:rgba(255,230,0,.12)}
 .automation-line{flex:0 0 40px;height:2px;background:var(--muted2);margin:0 -2px;min-width:24px}
 .automation-panel{margin-top:14px;padding:14px 16px;border-radius:12px;background:var(--panel2,rgba(0,0,0,.03));border:1px solid var(--border,rgba(0,0,0,.08))}
 .send-fab-wrap{display:flex;align-items:center;gap:14px}
-.send-fab{position:relative;width:48px;height:48px;flex:0 0 auto;border-radius:50%;border:2px solid var(--amber);background:var(--amberbg);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .2s,border-color .2s}
+/* Everything - background fill, the animated ring, and the checkmark - is drawn
+   inside ONE svg/viewBox now, on purpose: mixing a CSS border-radius circle with
+   an SVG-stroked circle put two different rasterizers in charge of "the same"
+   circle, which can disagree by a hairline and leave a visible seam. One svg,
+   one coordinate space, makes that seam impossible - they're the same circle. */
+.send-fab{position:relative;width:48px;height:48px;flex:0 0 auto;border:none;background:none;padding:0;margin:0;-webkit-appearance:none;appearance:none;outline:none;cursor:pointer;display:block}
 .send-fab:hover{filter:brightness(.97)}
-.send-ring{position:absolute;inset:-2px;width:52px;height:52px;transform:rotate(90deg);pointer-events:none}
-.send-ring-fg{fill:none;stroke:var(--green);stroke-width:3;stroke-dasharray:119.4;stroke-dashoffset:119.4}
+.send-fab-svg{width:48px;height:48px;display:block}
+.send-fab-bg{fill:transparent;transition:fill .2s}
+.send-ring-fg{fill:none;stroke:var(--green);stroke-width:3;stroke-dasharray:144.5;stroke-dashoffset:144.5;
+  transform-origin:24px 24px;transform:rotate(90deg)}
 .send-ring-fg.animating{stroke-dashoffset:0;transition:stroke-dashoffset 1.6s linear}
-.send-icon-svg{position:absolute;inset:0;width:48px;height:48px;pointer-events:none}
-.send-icon-arrow{fill:var(--amber);transition:opacity .2s}
-.send-icon-check{stroke:#fff;opacity:0;transition:opacity .3s}
-.send-fab.sending .send-icon-arrow{opacity:.4}
-.send-fab.sent{background:var(--green);border-color:var(--green)}
-.send-fab.sent .send-icon-arrow{opacity:0}
-.send-fab.sent .send-icon-check{animation:sendCheckFade 1.4s forwards}
-@keyframes sendCheckFade{0%{opacity:1}65%{opacity:1}100%{opacity:0}}
+.send-icon-check{stroke:var(--green);transition:stroke .2s}
+.send-fab.sent .send-fab-bg{fill:var(--green)}
+.send-fab.sent .send-icon-check{stroke:#fff}
 .email-day-notif{position:fixed;top:18px;right:18px;z-index:80;background:var(--red);color:#fff;padding:18px 26px;border-radius:12px;font-size:15px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.3);animation:notifPulse 1.5s ease-in-out infinite}
 @keyframes notifPulse{0%{box-shadow:0 0 0 0 rgba(200,40,40,.55)}70%{box-shadow:0 0 0 14px rgba(200,40,40,0)}100%{box-shadow:0 0 0 0 rgba(200,40,40,0)}}
 .hs{display:inline-flex;align-items:center;gap:8px}
@@ -319,6 +324,62 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .notes-in:focus{outline:2px solid var(--yellow)}
 .next-step{border:1px solid var(--line);background:var(--panel2);border-radius:var(--radius);padding:12px 14px}
 .next-step.overdue{border-color:rgba(214,69,69,.4);background:var(--redbg)}
+.kanban-board{display:flex;gap:14px;overflow-x:auto;align-items:flex-start;padding-bottom:6px}
+.kanban-sep{flex:0 0 3px;width:3px;height:100vh;border-radius:2px;align-self:flex-start}
+.risk-col{flex:1 1 240px;min-width:240px;background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);display:flex;flex-direction:column;max-height:74vh}
+.risk-col.drag-over{border-color:var(--yellow);box-shadow:0 0 0 2px rgba(255,230,0,.35) inset}
+.risk-col-hd{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line)}
+.risk-col-body{padding:10px;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.risk-card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;cursor:grab}
+.risk-card:hover{border-color:var(--yellow)}
+.risk-card.dragging{opacity:.4}
+.risk-card.pinned{border-color:var(--yellow);background:linear-gradient(180deg,rgba(255,230,0,.08),transparent 40%)}
+.pin-indicator{font-size:13px;line-height:1;flex:0 0 auto;filter:drop-shadow(0 0 1px var(--yellow))}
+.risk-card.alert-match{border-left:3px solid var(--blue);background:var(--bluebg)}
+/* Persistent (not a timed fade) - keeps pulsing until the CSM opens the card,
+   which is what actually acknowledges/clears it (see unackStageChange). */
+.risk-card.flash-worse{animation:riskFlashWorse 1.4s ease-in-out infinite}
+.risk-card.flash-better{animation:riskFlashBetter 1.4s ease-in-out infinite}
+@keyframes riskFlashWorse{0%,100%{box-shadow:0 0 0 0 rgba(214,69,69,.55)}50%{box-shadow:0 0 0 5px rgba(214,69,69,0)}}
+@keyframes riskFlashBetter{0%,100%{box-shadow:0 0 0 0 rgba(26,158,92,.55)}50%{box-shadow:0 0 0 5px rgba(26,158,92,0)}}
+.risk-flash-badge{position:absolute;top:-10px;right:-8px;padding:4px 10px;border-radius:999px;font-weight:800;font-size:12px;z-index:5;pointer-events:none;animation:riskFlashBadgePulse 1.4s ease-in-out infinite}
+@keyframes riskFlashBadgePulse{0%,100%{opacity:1}50%{opacity:.5}}
+.risk-card-hd{display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
+.risk-card-badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.risk-card-touch{font-size:11px;color:var(--muted2);border-top:1px dashed var(--line);padding-top:6px}
+.timeline{position:relative;padding-left:18px}
+.timeline-entry{position:relative;padding-bottom:16px}
+.timeline-entry:not(:last-child)::before{content:'';position:absolute;left:-14px;top:14px;bottom:-2px;width:1px;background:var(--line)}
+.timeline-dot{position:absolute;left:-18px;top:4px;width:9px;height:9px;border-radius:50%;background:var(--yellow);border:2px solid var(--panel)}
+.timeline-dot.aging{background:var(--amber)}
+.timeline-body{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px}
+.timeline-body.aging-flag{border-color:rgba(212,137,10,.4);background:var(--amberbg)}
+/* Escalation resolution stepper — a horizontal chevron flow (not a checklist)
+   so the whole sequence reads at a glance: done (green), the step you're on
+   now (violet), the step you're on and it's been sitting a while (orange with
+   a clock badge), and everything still ahead (gray). */
+.ce-stepper{display:flex;align-items:center;margin:22px 0 30px;overflow-x:auto;padding:22px 6px 6px}
+.ce-step{position:relative;flex:1 1 130px;min-width:120px;height:46px;margin-left:-14px;display:flex;align-items:center;justify-content:center;background:var(--graybg);color:var(--ink);font-weight:700;font-size:11px;text-align:center;padding:0 18px 0 26px;border:2px solid var(--line);clip-path:polygon(0 0,88% 0,100% 50%,88% 100%,0 100%,12% 50%);cursor:pointer}
+.ce-step:first-child{margin-left:0;clip-path:polygon(0 0,88% 0,100% 50%,88% 100%,0 100%);padding-left:14px}
+.ce-step.done{background:var(--green);border-color:var(--green);color:#fff}
+.ce-step.current{background:var(--violet);border-color:var(--violet);color:#fff}
+.ce-step.overdue{background:var(--orange);border-color:var(--orange);color:#fff}
+.ce-step.pending-locked{opacity:.6}
+.ce-step.active{box-shadow:0 0 0 3px var(--yellow) inset;z-index:1}
+.ce-step-marker{position:absolute;top:-16px;left:50%;transform:translateX(-50%);width:15px;height:15px;border-radius:50%;background:var(--green);border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}
+.ce-step-marker.clock{top:-30px;width:26px;height:26px;background:var(--orange);display:flex;align-items:center;justify-content:center;font-size:13px}
+/* Branch/converge CTA stepper (renewal + case_watch categories): "Loop in
+   sales" and "Meeting scheduled" run in parallel, not in sequence, so they
+   share one slot in the horizontal flow, stacked instead of side by side -
+   still full chevron arrows (same shape as every other step), just two of
+   them stacked in that one slot. Neither is really "first" in the overall
+   flow (both come after Email sent), so both explicitly get the same
+   notched-both-sides shape - without this override, the base
+   .ce-step:first-child rule would flatten just the top one's left edge. */
+.ce-stepper-branch{align-items:stretch}
+.ce-branch-pair{display:flex;flex-direction:column;gap:6px;flex:1 1 160px;min-width:150px}
+.ce-branch-pair .ce-step{flex:1;height:auto;min-height:34px;margin-left:0;font-size:10.5px;padding:0 16px 0 20px;clip-path:polygon(0 0,88% 0,100% 50%,88% 100%,0 100%,12% 50%)}
+.ce-branch-pair .ce-step:first-child{margin-left:0;padding-left:20px;clip-path:polygon(0 0,88% 0,100% 50%,88% 100%,0 100%,12% 50%)}
 .prodlist{display:flex;flex-direction:column;gap:8px}
 .prow{display:grid;grid-template-columns:180px 1fr 80px;gap:10px;align-items:center;font-size:12.5px}
 .prow .pn{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

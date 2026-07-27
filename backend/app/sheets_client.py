@@ -49,12 +49,20 @@ FIELD_HEADERS = {
     "timestamp": "timestamp",
     "account": "account",
     "score": "how likely are you to recommend",
-    "reason": "main reason for score",
-    "comment": "how can we improve your experience",
+    "reason": "main driver for your score",
+    "comment": "score above that threshold",
     "contact_name": "contact feedback name",
     "contact_title": "contact title",
-    "csat_score": "csat csm",
-    "csat_comments": "csat comments",
+    # The form now asks "How do you rate your customer success manager?" -
+    # this is a real 1-10 CSM satisfaction score, not a CSM's name (see the
+    # note in fetch_survey_responses below).
+    "csat_score": "rate your customer success manager",
+    # This follow-up question reuses near-identical wording to "comment"
+    # above ("...what can we do to score above that threshold?..."), just
+    # asked a second time after the CSM-rating question - matched below by
+    # requiring it to come after the csat_score column, since text alone
+    # can't tell the two apart.
+    "csat_comments": "score above that threshold",
     "description": "how would you describe axon",
     "relationship_intent": "do you intend to grow",
 }
@@ -64,9 +72,17 @@ def _build_header_map(header_row: list[str]) -> dict:
     mapping = {}
     lower_headers = [h.lower() for h in header_row]
     for field, needle in FIELD_HEADERS.items():
+        if field == "csat_comments":
+            continue
         idx = next((i for i, h in enumerate(lower_headers) if needle in h), None)
         if idx is not None:
             mapping[field] = idx
+    csat_idx = mapping.get("csat_score")
+    if csat_idx is not None:
+        needle = FIELD_HEADERS["csat_comments"]
+        idx = next((i for i, h in enumerate(lower_headers) if i > csat_idx and needle in h), None)
+        if idx is not None:
+            mapping["csat_comments"] = idx
     return mapping
 
 
