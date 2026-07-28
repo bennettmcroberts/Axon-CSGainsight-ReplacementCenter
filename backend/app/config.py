@@ -38,6 +38,7 @@ class Settings:
         )
         self.google_sheet_id = _clean(os.getenv("GOOGLE_SHEET_ID")) or "1wNpqWj4vG5BVa-q9k4omC5zHNBlCl3p-u7_ee7qCj3w"
         self.google_sheet_tab = _clean(os.getenv("GOOGLE_SHEET_TAB")) or "NPS Form Response"
+        self.anthropic_api_key = _clean(os.getenv("ANTHROPIC_API_KEY"))
         session_secret = _clean(os.getenv("SESSION_SECRET"))
         if not session_secret:
             session_secret = secrets.token_hex(32)
@@ -56,6 +57,10 @@ class Settings:
     @property
     def google_sheets_configured(self) -> bool:
         return os.path.isfile(self.google_credentials_path)
+
+    @property
+    def anthropic_configured(self) -> bool:
+        return bool(self.anthropic_api_key)
 
     @property
     def effective_mode(self) -> str:

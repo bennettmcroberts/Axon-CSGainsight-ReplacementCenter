@@ -7,3 +7,5 @@ backend/google_credentials.json
 backend/gmail_client_secret.json
 backend/gmail_token.json
 .DS_Store
+.claude/
+backend/data/

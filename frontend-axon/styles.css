@@ -84,7 +84,8 @@ header.top::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3p
 .icon-rail{flex:0 0 64px;display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px 0;overflow-y:auto;
   background:var(--page);border-right:1px solid var(--line)}
 .rail-btn{width:40px;height:40px;flex:0 0 auto;border:none;background:none;color:var(--muted2);cursor:pointer;
-  border-radius:12px;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+  border-radius:12px;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;position:relative}
+.rail-badge{position:absolute;top:2px;right:2px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--red);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;pointer-events:none}
 .rail-btn .ic{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .rail-btn:hover{background:var(--panel2);color:var(--ink)}
 .rail-btn.active{background:var(--yellow);color:#000}
@@ -354,6 +355,36 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .timeline-dot.aging{background:var(--amber)}
 .timeline-body{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px}
 .timeline-body.aging-flag{border-color:rgba(212,137,10,.4);background:var(--amberbg)}
+/* Success Plan horizontal timeline — a date axis with alternating above/below
+   nodes; blue = the milestone has an active escalation/CTA attached (clicking
+   jumps straight to it in Engagement), red = an email template attached
+   (clicking jumps into that draft), black = anything else (clicking opens
+   the plain step-detail view). */
+.ms-timeline{position:relative;display:flex;overflow-x:auto;height:210px;padding:0 10px}
+.ms-timeline::before{content:'';position:absolute;left:0;right:0;top:105px;height:2px;background:var(--line)}
+.ms-tl-item{position:relative;flex:0 0 150px;height:210px}
+.ms-tl-dot{position:absolute;left:50%;top:105px;width:12px;height:12px;margin-left:-6px;margin-top:-6px;border-radius:50%;background:var(--ink);cursor:pointer;z-index:2}
+.ms-tl-dot.email{background:var(--red)}
+.ms-tl-dot.engagement{background:var(--blue)}
+.ms-tl-dot.ms-pending{background:var(--amber)}
+.ms-tl-dot.ms-resolved{background:var(--green)}
+.ms-tl-dot.done{opacity:.7}
+.ms-tl-date{position:absolute;left:50%;top:117px;transform:translateX(-50%);font-size:11px;color:var(--muted);white-space:nowrap}
+.ms-tl-stem{position:absolute;left:50%;width:1px;background:var(--line)}
+.ms-tl-item.above .ms-tl-stem{top:48px;height:57px}
+.ms-tl-item.below .ms-tl-stem{top:105px;height:57px}
+.ms-tl-stem.email{background:var(--red)}
+.ms-tl-stem.engagement{background:var(--blue)}
+.ms-tl-stem.ms-pending{background:var(--amber)}
+.ms-tl-stem.ms-resolved{background:var(--green)}
+.ms-tl-box{position:absolute;left:50%;transform:translateX(-50%);width:130px;border:1px dashed var(--line);border-radius:8px;padding:8px 10px;font-size:11px;text-align:center;cursor:pointer;background:var(--panel)}
+.ms-tl-item.above .ms-tl-box{top:0}
+.ms-tl-item.below .ms-tl-box{top:162px}
+.ms-tl-box.email{border-color:var(--red);border-style:solid}
+.ms-tl-box.engagement{border-color:var(--blue);border-style:solid}
+.ms-tl-box.ms-pending{border-color:var(--amber);border-style:solid;background:var(--amberbg)}
+.ms-tl-box.ms-resolved{border-color:var(--green);border-style:solid;background:var(--greenbg)}
+.ms-tl-box.done{opacity:.7}
 /* Escalation resolution stepper — a horizontal chevron flow (not a checklist)
    so the whole sequence reads at a glance: done (green), the step you're on
    now (violet), the step you're on and it's been sitting a while (orange with
@@ -364,6 +395,8 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .ce-step.done{background:var(--green);border-color:var(--green);color:#fff}
 .ce-step.current{background:var(--violet);border-color:var(--violet);color:#fff}
 .ce-step.overdue{background:var(--orange);border-color:var(--orange);color:#fff}
+.ce-step.reading{background:var(--amber);border-color:var(--amber);color:#fff;animation:ceStepReading 1.4s ease-in-out infinite}
+@keyframes ceStepReading{0%{box-shadow:0 0 0 0 rgba(212,137,10,.55)}70%{box-shadow:0 0 0 10px rgba(212,137,10,0)}100%{box-shadow:0 0 0 0 rgba(212,137,10,0)}}
 .ce-step.pending-locked{opacity:.6}
 .ce-step.active{box-shadow:0 0 0 3px var(--yellow) inset;z-index:1}
 .ce-step-marker{position:absolute;top:-16px;left:50%;transform:translateX(-50%);width:15px;height:15px;border-radius:50%;background:var(--green);border:2px solid var(--panel);box-shadow:0 0 0 1px var(--line)}

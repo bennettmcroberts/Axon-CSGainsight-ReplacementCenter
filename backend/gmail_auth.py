@@ -14,7 +14,7 @@ from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"]
 BACKEND_DIR = Path(__file__).resolve().parent
 CLIENT_SECRET_PATH = BACKEND_DIR / "gmail_client_secret.json"
 TOKEN_PATH = BACKEND_DIR / "gmail_token.json"

@@ -297,10 +297,32 @@ function teamSideList(acctId,side,members){
     <button class="btn sm" onclick="${addFn}">+ Add</button>
   </div>`;
 }
+function productScorecardCardHtml(a){
+  const fams=(intelCache[a.id]&&intelCache[a.id].famsRaw)||[];
+  const rec=productScorecards[a.id]||{};
+  if(!fams.length) return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Product-line scorecard</h3>
+    <p class="mini">Open the Products Purchased card above once (loads real product-line data) to score goals/risk per product line here.</p>
+  </div>`;
+  const riskOpts=['healthy','watch','atrisk'];
+  const riskLabel={healthy:'Healthy',watch:'Watch',atrisk:'At risk'};
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Product-line scorecard <span class="hint">goals/risk per product family, aggregating up to this account</span></h3>
+    <table><thead><tr><th>Product family</th><th>Risk</th><th>Goal</th><th>Notes</th></tr></thead><tbody>
+    ${fams.map(f=>{
+      const fam=f.fam||'(unspecified)'; const r=rec[fam]||{goal:'',risk:'healthy',notes:''};
+      return `<tr><td><b>${esc(prodName(fam))}</b></td>
+        <td><select class="select" onchange="setProductScorecardField('${a.id}','${esc(fam)}','risk',this.value)">${riskOpts.map(o=>`<option value="${o}" ${o===r.risk?'selected':''}>${riskLabel[o]}</option>`).join('')}</select></td>
+        <td><input type="text" class="select" value="${esc(r.goal)}" placeholder="What does the customer want from this product?" onchange="setProductScorecardField('${a.id}','${esc(fam)}','goal',this.value)"></td>
+        <td><input type="text" class="select" value="${esc(r.notes)}" placeholder="Qualifying info" onchange="setProductScorecardField('${a.id}','${esc(fam)}','notes',this.value)"></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>
+  </div>`;
+}
 function teamRosterCard(a){
   const t=teamFor(a.id);
   return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Who's on this account</h3>
   <p class="mini">Named repeatedly in stakeholder research as one of the biggest gaps: cross-team blindness into who's talking to a customer, and customers not knowing who to contact. Document it here so it's visible to anyone who opens this account.</p>
+  ${a.hasExecSponsor===false?`<div class="mini" style="color:var(--red);margin-bottom:8px">No executive sponsor on file — flagged on Accounts &amp; Risk.</div>`:''}
   <div class="grid2" style="margin-top:12px">
     <div><h4 style="margin:0 0 8px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Axon team</h4>${teamSideList(a.id,'axon',t.axon||[])}</div>
     <div><h4 style="margin:0 0 8px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Customer-side team</h4>${teamSideList(a.id,'customer',t.customer||[])}</div>
@@ -435,6 +457,24 @@ let currentCsmView = null; // CSM name of the profile page currently open, if on
 let currentRiskCardId = null; // acctId of the expanded risk card in #sheet, if one is open
 let commsCache = {};
 let intelCache = {};
+// ---- Product-line scorecard (org-config-gated - orgFeatureFlags.productLineScorecard) ----
+// LE's own ask: goals/risk/qualifying info tracked per product family, off
+// the exact same real Product2.Family purchase data Account 360 already
+// fetches (intelCache[id].famsRaw) - not a bulk N+1 fetch across the whole
+// book, just what's been captured as CSMs actually visit accounts.
+let productScorecards = LS.get('productScorecards',{}); // acctId -> {family:{goal,risk,notes,updatedAt}}
+function saveProductScorecards(){ LS.set('productScorecards',productScorecards); }
+function setProductScorecardField(acctId,family,field,value){
+  productScorecards[acctId]=productScorecards[acctId]||{};
+  productScorecards[acctId][family]=productScorecards[acctId][family]||{goal:'',risk:'healthy',notes:''};
+  productScorecards[acctId][family][field]=value;
+  productScorecards[acctId][family].updatedAt=new Date().toISOString();
+  saveProductScorecards();
+}
+function acctProductRiskRollup(acctId){
+  const rec=productScorecards[acctId]||{}; const fams=Object.keys(rec);
+  return {total:fams.length, atRisk:fams.filter(f=>rec[f].risk==='atrisk').length, watch:fams.filter(f=>rec[f].risk==='watch').length, healthy:fams.filter(f=>rec[f].risk==='healthy').length};
+}
 
 // ---------- load pipeline ----------
 async function load(){
@@ -463,7 +503,18 @@ async function load(){
       lastAct:(o.Account&&o.Account.LastActivityDate)||null,
       ltv:0, pastDeals:0, firstPurchase:null, lastPurchase:null,
       lifeCases:0, lifeHigh:0, lifeEsc:0, sentiment:null, sentTier:'none',
-      casesBlocked:0, casesAging:0, growth:{Renewal:0,Expansion:0,Transactional:0}, usage:null
+      casesBlocked:0, casesAging:0, growth:{Renewal:0,Expansion:0,Transactional:0}, usage:null,
+      // Account Foundations (industry/employee count) - informational only, not
+      // sourced from a live query yet (no Industry/EmployeeCount SOQL column
+      // confirmed in the org); derived deterministically from the account id so
+      // it's stable across reloads instead of re-randomizing every render.
+      industry:'Public Safety', employeeCount:50+Math.floor(mulberry32(hashStr(o.AccountId))()*4950),
+      // Contact roster (Executive Sponsor persona) and Event (QBR cadence) and
+      // Contract (notice period) - none of these are live-queried yet either;
+      // default to "no signal" so real accounts never falsely fire these until
+      // a real data source is wired up. Only the demo seed below (non-Test10
+      // pilot accounts already used for the aging-trigger demo) sets them.
+      hasExecSponsor:true, qbrDaysOverdue:null, contractEnd:null, noticePeriodDays:null
     };}
     a.renewalAmount += o.Amount||0;
     a.opps.push({name:o.Name, amount:o.Amount, close:o.CloseDate, stage:o.StageName});
@@ -604,7 +655,13 @@ function sentPill(a){
 // CSAT shows a placeholder: a manual value if a CSM has set one, otherwise a
 // derived stand-in from the sentiment signal. Clearly flagged as a placeholder.
 function csatVal(a){
+  if(riskTest10 && test10Snapshot && TEST10_ACCOUNTS.includes(a.name) && !(test10Revealed[a.id]&&test10Revealed[a.id].npsCsat)) return {v:null, src:'blanked'};
   if(csat[a.id]!=null) return {v:csat[a.id], src:'manual'};
+  // Sandbox override: Test10 accounts never fall back to the mock sentiment
+  // placeholder - CSAT for these 10 only ever comes from an actual synced
+  // survey response (csat[a.id] above) or stays blank, same "no existing
+  // data until it's actually fed in" rule as everything else in Test10.
+  if(riskTest10 && TEST10_ACCOUNTS.includes(a.name)) return {v:null, src:'none'};
   if(a.sentiment!=null) return {v:a.sentiment, src:'placeholder'};
   return {v:null, src:'none'};
 }
@@ -665,7 +722,7 @@ function scoreAccount(a){
   a.riskARR = a.renewalAmount*(100-score)/100;
   return a;
 }
-function computeAll(){ STATE.accounts.forEach(a=>{ syncLastActFromActivity(a.id); scoreAccount(a); }); refreshCsat(); rebuildEsc(); seedMockCsatQuarter(); evaluateRiskTriggers(); seedDemoAgingTriggers(); resetTest10RiskBaseline(); migrateCtaStepsForBranchCategories(); }
+function computeAll(){ STATE.accounts.forEach(a=>{ syncLastActFromActivity(a.id); scoreAccount(a); }); refreshCsat(); rebuildEsc(); seedMockCsatQuarter(); seedDemoObjectExtensions(); seedNpsHistoryForTrend(); evaluateRiskTriggers(); seedDemoAgingTriggers(); resetTest10RiskBaseline(); migrateCtaStepsForBranchCategories(); applyTest10DataBlanking(); }
 // Guarantees the 10 NPS/CSAT pilot accounts always start Stable on the risk
 // board, every session - wipes any triggers/overrides/churn status the
 // engine or a prior session attached to them, so this is always a clean,
@@ -682,18 +739,171 @@ function resetTest10RiskBaseline(){
   // CTAs kept accumulating forever even though the risk board itself reset
   // to a clean Stable baseline on every reload.
   engagementCtas=engagementCtas.filter(c=>!ids.has(c.accountId));
+  // Success Plans auto-generate the moment anyone opens a Plans page for an
+  // account with none on file (see openPlan) - without wiping them here too,
+  // a plan created by simply viewing the tab once (in an earlier session, or
+  // by accident) would sit in Worklist forever, contradicting the "clean
+  // Test10 baseline every session, nothing until it's actually triggered"
+  // guarantee this function otherwise provides for triggers/CTAs/escalations.
+  ids.forEach(id=>{ delete plans[id]; });
+  // Email Outreach, Customer Contact Insights and Customer Success Emails are
+  // all just different filtered views over this one shared send/receive log
+  // (see contactLogEntries/viewGong and viewCsEmails) - without wiping it
+  // here too, a Test10 reset left every prior run's sent/received emails
+  // sitting in all three views forever, even though the CTAs/escalations
+  // that generated them had already been cleared above. Account Outcomes
+  // needs no separate wipe - it's purely derived from plans + a.nps, both
+  // already reset above/by the NPS blanking pipeline.
+  emailDrafts=emailDrafts.filter(d=>!ids.has(d.acctId));
+  // Predictive Insights (keyed acctId__quarter) are generated content too -
+  // without wiping these, a Test10 reset left last run's "review of the
+  // past"/timeline sitting there already-generated, so the demo couldn't
+  // show the real "Generate predictive insight" moment again from scratch.
+  Object.keys(predictiveInsights).forEach(key=>{ if(ids.has(key.split('__')[0])) delete predictiveInsights[key]; });
   saveTriggerEvents(); saveRiskOverrides(); saveChurnedAccounts(); LS.set('escState',escState);
-  saveEngagementCtas();
+  saveEngagementCtas(); savePlans(); saveEmailDrafts(); savePredictiveInsights();
   STATE.escList=(STATE.escList||[]).filter(e=>!ids.has(e.acctId));
+}
+// Predictive Insights (3rd prong, alongside reactive escalations / proactive
+// CTAs): not an email-sending workflow - it's an analysis. Every account is
+// in scope; "generating" an insight reviews the account's own history,
+// compares it against similar accounts, and proposes a forward-looking
+// relationship timeline. No risk trigger behind any of it, and no
+// email/chevron stepper - just a review, an analysis, and a proposal.
+// Keyed by "acctId__YYYY-Qn" (see predictiveKey) rather than just acctId -
+// insights run on the same quarterly cycle as the survey/plan cadence, so
+// each quarter gets its own generated insight instead of one that lasts forever.
+let predictiveInsights = LS.get('predictiveInsights',{}); // key -> {quarter, generatedAt, pastReview, analysis, similar:[{name,note}], timeline:[{when,action,detail,emailTemplate}]}
+function savePredictiveInsights(){ LS.set('predictiveInsights',predictiveInsights); }
+function predictiveKey(acctId,qKey){ return acctId+'__'+qKey; }
+function predictiveInsightFor(acctId,qKey){ return predictiveInsights[predictiveKey(acctId,qKey)]||null; }
+// Smart default before the shared quarter toggle has ever been touched -
+// tied to the same unified Test10 flag: Test10 on = live pilot quarter
+// (where the pilot's real data lives), Test10 off = the prior quarter (where
+// the seeded full-book mock data lives). Once a user picks any quarter via
+// the toggle, globalQSel overrides this everywhere, uniformly.
+function defaultQSel(){ const q=riskTest10?PILOT_QUARTER:MOCK_QUARTER; const [y,qq]=q.split('-Q'); return {year:+y,q:+qq}; }
+const PREDICTIVE_TOUCH_TYPES=['a training session','an onboarding check-in','a support case follow-up','a renewal/contract call'];
+const PREDICTIVE_PEER_OUTCOMES=[
+  'a quarterly relationship check-in with no open agenda measurably improved renewal confidence',
+  'proactively looping in a second stakeholder reduced single-threading risk before it became a problem',
+  'an early value-recap conversation surfaced an expansion opportunity nobody had asked about',
+  'scheduling the next QBR before it was overdue kept the account from ever showing a cadence gap',
+];
+// Deterministic per-account "review of the past" - reads the account's own
+// real fields (last touch, sentiment, exec sponsor) rather than fabricating
+// unrelated data, and only invents the one thing with no real source yet
+// (what kind of contact it was).
+function predictiveGeneratePastReview(a,rnd){
+  const lastType=PREDICTIVE_TOUCH_TYPES[Math.floor(rnd()*PREDICTIVE_TOUCH_TYPES.length)];
+  const touchLine = a.daysSinceLastTouch!=null ? `Last logged contact was ${a.daysSinceLastTouch} days ago (${lastType}).` : `No logged contact on file yet.`;
+  return `${touchLine} Historically, engagement with this account has centered on transactional or support topics — there's a clear opening to shift toward a more proactive, relationship-first rhythm going forward.`;
+}
+function predictiveGenerateAnalysis(a){
+  const sentLabel=a.sentTier==='pos'?'positive':a.sentTier==='neg'?'strained':a.sentTier==='neu'?'neutral':'unknown';
+  const dealsLine=a.pastDeals?` and ${a.pastDeals} closed-won deal(s) already on the books`:'';
+  return `Looking ahead, ${a.name} is well-positioned to deepen the relationship — ${sentLabel} sentiment${dealsLine} give a real foundation to build on.${a.hasExecSponsor===false?' Confirming an executive sponsor would strengthen that foundation further.':''}${a.qbrDaysOverdue?' A fresh QBR is a natural next step to re-anchor the cadence.':''}`;
+}
+// "Similar cases" - other real accounts in the same segment, each paired
+// with a plausible relationship-building outcome (the one part with no real
+// source yet, since there's no historical outcome-tracking system).
+function predictiveGenerateSimilar(a,rnd){
+  const peers=STATE.accounts.filter(x=>x.id!==a.id && x.segment===a.segment)
+    .sort(()=>rnd()-0.5).slice(0,2);
+  return peers.map((p,i)=>({name:p.name,note:PREDICTIVE_PEER_OUTCOMES[Math.floor(rnd()*PREDICTIVE_PEER_OUTCOMES.length)]}));
+}
+// Each step is tagged with the email template it implies sending, where the
+// best next action really is "send an email" - reusing the same templates
+// the risk-trigger engine already sends (cust_checkin/cust_product/
+// cust_expansion), so a step that implies email jumps straight into a real
+// draft. Steps with no natural email (an internal review, a scheduling
+// check) carry no template - those open the plain step-detail view instead.
+// If the account currently has a live risk signal on Accounts & Risk (Early
+// Signal/Elevated/Active Risk - anything short of Stable/Churned), that
+// becomes step one, ahead of any relationship-building step - you can't
+// credibly propose "strengthen the relationship" while a real problem is
+// sitting open. That step implies neither an email nor an internal task; it
+// jumps straight into the account's actual escalation/CTA record.
+// Shared between the local deterministic generator and the real-AI path -
+// the "address the active risk signal" step is a routing/data fact (which
+// account, which stage), never something worth asking the model to invent,
+// so both paths prepend the exact same deterministic step rather than
+// leaving it up to whatever the model happens to produce.
+function predictiveRiskStepFor(a){
+  const stage=getRiskStage(a);
+  if(stage==='healthy'||stage==='churned') return [];
+  return [{when:'Now',action:'Address the active risk signal',detail:`This account currently has an active ${RISK_STAGE_LABELS[stage]} signal on Accounts & Risk — worth closing out first so the relationship-building steps below land on solid ground.`,emailTemplate:null,impliesEngagement:true}];
+}
+function predictiveGenerateTimeline(a,similar){
+  const riskStep=predictiveRiskStepFor(a);
+  return [
+    ...riskStep,
+    {when:'Week 1',action:'Relationship check-in call',detail:'No agenda tied to any open issue — purely to strengthen the relationship.',emailTemplate:'cust_checkin'},
+    {when:'Week 3',action:'Loop in a second stakeholder',detail:similar.length?`Reduce single-threading risk — ${similar[0].name} saw this help.`:'Reduce single-threading risk on this account.',emailTemplate:null},
+    {when:'Week 5',action:'Share a value recap',detail:'Highlight adoption wins and ROI since the last renewal.',emailTemplate:'cust_product'},
+    {when:'Week 7',action:'Confirm executive sponsor coverage',detail:a.hasExecSponsor===false?'No sponsor currently on file — identify and confirm one internally before reaching out.':'Internal check that the sponsor relationship is still current.',emailTemplate:null},
+    {when:'Week 9',action:'Explore expansion interest',detail:'Low-pressure conversation, not a formal pitch.',emailTemplate:'cust_expansion'},
+    {when:'Week 12',action:'Quarterly relationship touch',detail:'Repeat the cadence — no agenda tied to any open issue.',emailTemplate:'cust_checkin'},
+  ];
+}
+function generatePredictiveInsight(acctId,qKey){
+  qKey=qKey||currentQuarter();
+  const a=STATE.accounts.find(x=>x.id===acctId); if(!a) return;
+  const rnd=mulberry32(hashStr(acctId+qKey));
+  const similar=predictiveGenerateSimilar(a,rnd);
+  predictiveInsights[predictiveKey(acctId,qKey)]={
+    quarter:qKey,
+    generatedAt:new Date().toISOString(),
+    pastReview:predictiveGeneratePastReview(a,rnd),
+    analysis:predictiveGenerateAnalysis(a),
+    similar,
+    timeline:predictiveGenerateTimeline(a,similar),
+  };
+  savePredictiveInsights();
 }
 // Demo-only: guarantees a few real (non-Test10) accounts always show the aging
 // pill without needing to wait on actual elapsed time or paste a console
 // script - backdates firedAt directly (bypassing the normal dedup-and-skip in
 // fireTrigger) so this is idempotent across reloads and always visible.
+// Demo-only: sets the new not-yet-live-queried fields (Contact Exec Sponsor
+// persona / Event QBR cadence / Contract notice period) on a couple of the
+// same demo accounts seedDemoAgingTriggers already uses - must run BEFORE
+// evaluateRiskTriggers() in computeAll() so the normal trigger-firing logic
+// picks these up naturally, same as any real field would.
+function seedDemoObjectExtensions(){
+  const set=(name,fields)=>{ const a=STATE.accounts.find(x=>x.name===name); if(a) Object.assign(a,fields); };
+  set('Fairview Correctional Facility',{hasExecSponsor:false}); // pairs with its existing case load - too many tickets AND no champion
+  set('Dunmore Police Department',{qbrDaysOverdue:RISK_QBR_OVERDUE_DAYS+45}); // pairs with its existing usage_drop - a broader disengagement story
+  set('Ivywood Highway Patrol',{contractEnd:new Date(Date.now()+45*86400000).toISOString(),noticePeriodDays:30}); // sharper renewal-timing signal alongside its existing TAP refresh
+}
+// NPS trend (org-config gated: orgFeatureFlags.npsTrend, Law Enforcement's
+// ask) - additive a.npsHistory, purely fabricated for Test10 accounts only,
+// never touching the real a.nps field itself (the history's last point always
+// equals whatever a.nps genuinely is right now). Only runs when the flag is
+// on, and only ever on the 10 pilot accounts - no fake history invented for
+// the real book.
+function seedNpsHistoryForTrend(){
+  if(!orgFeatureFlags.npsTrend) return;
+  TEST10_ACCOUNTS.forEach(name=>{
+    const a=STATE.accounts.find(x=>x.name===name); if(!a || a.npsHistory) return;
+    const rnd=mulberry32(hashStr(a.id+'nps_trend'));
+    const current=a.nps!=null?a.nps:7;
+    const declining=rnd()<0.4; // ~40% of the 10 accounts show a real decline, rest are flat/stable
+    const q3=current;
+    const q2=declining?Math.min(10,q3+1+Math.floor(rnd()*2)):q3;
+    const q1=declining?Math.min(10,q2+1+Math.floor(rnd()*2)):q3;
+    a.npsHistory=[{quarter:'Q1',score:q1},{quarter:'Q2',score:q2},{quarter:'Q3',score:q3}];
+  });
+}
 function seedDemoAgingTriggers(){
   const seeds=[
     {name:'Ivywood Highway Patrol',type:'tap_refresh_due',daysAgo:35,action:'schedule_tap_refresh'},
     {name:'Fairview Correctional Facility',type:'case_aging',daysAgo:35,action:'escalate_to_support_lead'},
+    // Ticket-volume-spike + NPS drop co-firing, on the same account already
+    // carrying case_aging - demonstrates the "high case volume now, NPS drop
+    // follows" causal pattern without fabricating real Case/Account fields.
+    {name:'Fairview Correctional Facility',type:'case_volume_spike',daysAgo:20,action:'escalate_to_support_lead'},
+    {name:'Fairview Correctional Facility',type:'nps_csat_drop',daysAgo:10,action:'escalate_to_support_lead'},
     {name:'Dunmore Police Department',type:'usage_drop',daysAgo:45,action:'draft_adoption_email'},
   ];
   seeds.forEach(seed=>{
@@ -729,9 +939,43 @@ function isChurned(acctId){ return !!churnedAccounts[acctId]; }
 // adding a duplicate tier field with the same meaning.
 const RISK_SLA_DAYS_BY_SEGMENT={'Enterprise':5,'Mid-Market':10,'SMB':15};
 const RISK_RENEWAL_PREP_WINDOW_DAYS=60; // fire if renewal is within this many days...
+const RISK_CASE_VOLUME_SPIKE_THRESHOLD=6; // open-case count above this is a support-capacity signal, distinct from case_aging (age) / case_blocked (SLA)
+const RISK_QBR_OVERDUE_DAYS=90;
 const RISK_RENEWAL_PREP_STALE_DAYS=30;  // ...and no activity logged in this many days
-const RISK_TRIGGER_LABELS={case_blocked:'Case blocked past SLA',usage_drop:'Usage below adoption target',renewal_prep_stale:'No renewal-prep activity',escalation_opened:'Escalation opened',nps_csat_drop:'NPS/CSAT drop',tap_refresh_due:'TAP refresh due',case_aging:'Case aging',renewal_stage_behind:'Renewal stuck in early stage',growth_mix_stalled:'No cross-sell/upsell ever',onboarding_stall:'Onboarding milestone overdue',cadence_gap:'Overdue for routine check-in'};
-const RISK_ACTION_LABELS={draft_renewal_email:'Draft renewal check-in email',draft_adoption_email:'Draft adoption check-in email',escalate_to_support_lead:'Escalate to support lead',review_escalation:'Review escalation',schedule_tap_refresh:'Schedule TAP refresh',draft_expansion_email:'Draft expansion conversation email',draft_onboarding_email:'Draft onboarding check-in email',draft_cadence_email:'Draft cadence check-in email'};
+const RISK_TRIGGER_LABELS_BASE={case_blocked:'Case blocked past SLA',usage_drop:'Usage below adoption target',renewal_prep_stale:'No renewal-prep activity',escalation_opened:'Escalation opened',nps_csat_drop:'NPS/CSAT drop',tap_refresh_due:'TAP refresh due',case_aging:'Case aging',renewal_stage_behind:'Renewal stuck in early stage',growth_mix_stalled:'No cross-sell/upsell ever',onboarding_stall:'Onboarding milestone overdue',cadence_gap:'Overdue for routine check-in',onboarding_no_plan:'New logo missing a success plan',negative_sentiment:'Negative customer sentiment',case_volume_spike:'Open case volume spike',no_exec_sponsor:'No executive sponsor on file',qbr_overdue:'QBR overdue',nps_trend_decline:'Sustained NPS decline (trend)'};
+// ---------- Org config: per-org overrides on top of the fixed pipeline ----------
+// The trigger -> category -> step-shape pipeline never changes per org (see
+// "Org Config Reference" doc in the project root) - only whether a trigger
+// is enabled, its label, its category routing, its weight, and entirely new
+// custom triggers an org invents (which must still declare an existing
+// category + weight, same shape as every built-in trigger). Everything below
+// is intentionally additive: RISK_TRIGGER_LABELS/CTA_CATEGORY_BY_TRIGGER stay
+// the exact names every existing call site already reads, they just become
+// live Proxies over a mutable base so overrides apply everywhere at once
+// without rewriting 35+ call sites individually.
+let triggerEnabled=LS.get('triggerEnabled',{}); // key -> false (absent/true = enabled)
+let triggerLabelOverrides=LS.get('triggerLabelOverrides',{}); // key -> label string
+let triggerCategoryOverrides=LS.get('triggerCategoryOverrides',{}); // key -> category
+let customTriggers=LS.get('customTriggers',[]); // [{key,label,category,weight}] - manual-simulate only, no bespoke fire condition
+let orgFeatureFlags=LS.get('orgFeatureFlags',{productLineScorecard:false,npsTrend:false});
+function customTriggerDef(key){ return customTriggers.find(c=>c.key===key); }
+function triggerIsEnabled(key){ return triggerEnabled[key]!==false; }
+const RISK_TRIGGER_LABELS=new Proxy(RISK_TRIGGER_LABELS_BASE,{
+  get(target,key){
+    if(typeof key!=='string') return target[key];
+    if(triggerLabelOverrides[key]!=null) return triggerLabelOverrides[key];
+    if(key in target) return target[key];
+    const c=customTriggerDef(key); return c?c.label:undefined;
+  },
+  has(target,key){ return key in target || !!customTriggerDef(key); },
+  ownKeys(target){ return [...new Set([...Reflect.ownKeys(target), ...customTriggers.map(c=>c.key)])]; },
+  getOwnPropertyDescriptor(target,key){
+    if(key in target) return Reflect.getOwnPropertyDescriptor(target,key);
+    if(customTriggerDef(key)) return {enumerable:true,configurable:true,value:this.get(target,key)};
+    return undefined;
+  }
+});
+const RISK_ACTION_LABELS={draft_renewal_email:'Draft renewal check-in email',draft_adoption_email:'Draft adoption check-in email',escalate_to_support_lead:'Escalate to support lead',review_escalation:'Review escalation',schedule_tap_refresh:'Schedule TAP refresh',draft_expansion_email:'Draft expansion conversation email',draft_onboarding_email:'Draft onboarding check-in email',draft_cadence_email:'Draft cadence check-in email',draft_onboarding_nudge_email:'Draft onboarding milestone nudge email',draft_qbr_email:'Draft QBR scheduling email'};
 // Weighted score model (replaces a hardcoded "any open escalation = worst
 // stage" rule, which wrongly made escalating a MILD issue look more severe
 // than an unescalated serious one). Every open trigger contributes points -
@@ -742,7 +986,7 @@ const RISK_ACTION_LABELS={draft_renewal_email:'Draft renewal check-in email',dra
 // Health Model tab (WEIGHTS): per-browser today (see note in UI), trivially
 // portable to a shared backend config later since it's just one JSON blob.
 const DEFAULT_RISK_WEIGHTS={
-  weights:{case_blocked:3,nps_csat_drop:3,case_aging:2,renewal_stage_behind:2,onboarding_stall:2,usage_drop:1,tap_refresh_due:1,growth_mix_stalled:1,renewal_prep_stale:1,escalation_low:1,escalation_medium:2,escalation_high:4,escalation_critical:6},
+  weights:{case_blocked:3,nps_csat_drop:3,case_aging:2,renewal_stage_behind:2,onboarding_stall:2,usage_drop:1,tap_refresh_due:1,growth_mix_stalled:1,renewal_prep_stale:1,onboarding_no_plan:2,negative_sentiment:3,case_volume_spike:2,no_exec_sponsor:2,qbr_overdue:1,escalation_low:1,escalation_medium:2,escalation_high:4,escalation_critical:6},
   thresholds:{elevated:3,active:5}, // score>=active -> Active Risk; score>=elevated -> Elevated Risk; else (score>=1) -> Early Signal
   agingDays:21, agingBonus:2 // every N days a trigger stays open, add this many points to its contribution
 };
@@ -756,6 +1000,133 @@ function riskWeightLabel(k){
   const escLabels={escalation_low:'Escalation (Low severity)',escalation_medium:'Escalation (Medium severity)',escalation_high:'Escalation (High severity)',escalation_critical:'Escalation (Critical severity)'};
   return escLabels[k]||RISK_TRIGGER_LABELS[k]||k;
 }
+// ---- Org config slots: named, switchable bundles of every setting above ----
+// A "slot" is a snapshot of everything an org could plausibly want different -
+// risk weights/thresholds, health weights, adoption cutoffs, per-trigger
+// enabled/label/category overrides, and custom triggers. Switching slots just
+// swaps these runtime variables and recomputes - the trigger engine itself
+// never knows or cares which slot is active.
+function currentConfigBundle(){
+  return {
+    riskWeights:JSON.parse(JSON.stringify(riskWeights)),
+    WEIGHTS:Object.assign({},WEIGHTS),
+    adoptionCfg:Object.assign({},adoptionCfg),
+    triggerEnabled:Object.assign({},triggerEnabled),
+    triggerLabelOverrides:Object.assign({},triggerLabelOverrides),
+    triggerCategoryOverrides:Object.assign({},triggerCategoryOverrides),
+    customTriggers:JSON.parse(JSON.stringify(customTriggers)),
+    orgFeatureFlags:Object.assign({},orgFeatureFlags),
+  };
+}
+function axonDefaultBundle(){
+  return {
+    riskWeights:JSON.parse(JSON.stringify(DEFAULT_RISK_WEIGHTS)),
+    WEIGHTS:Object.assign({},DEFAULT_WEIGHTS),
+    adoptionCfg:{adoptingPct:60,atRiskPct:35},
+    triggerEnabled:{}, triggerLabelOverrides:{}, triggerCategoryOverrides:{}, customTriggers:[],
+    orgFeatureFlags:{productLineScorecard:false,npsTrend:false},
+  };
+}
+function applyConfigBundle(b){
+  riskWeights=b.riskWeights; WEIGHTS=b.WEIGHTS; adoptionCfg=b.adoptionCfg;
+  triggerEnabled=b.triggerEnabled; triggerLabelOverrides=b.triggerLabelOverrides; triggerCategoryOverrides=b.triggerCategoryOverrides;
+  customTriggers=b.customTriggers; orgFeatureFlags=b.orgFeatureFlags;
+  saveRiskWeights(); LS.set('weights',WEIGHTS); LS.set('adoptionCfg',adoptionCfg);
+  LS.set('triggerEnabled',triggerEnabled); LS.set('triggerLabelOverrides',triggerLabelOverrides); LS.set('triggerCategoryOverrides',triggerCategoryOverrides);
+  LS.set('customTriggers',customTriggers); LS.set('orgFeatureFlags',orgFeatureFlags);
+  computeAll(); route();
+}
+// Pre-seeded directly from the 5 org_ref_*.md docs' trigger tables - the
+// "clean fit" changes (weights/thresholds/enable-disable) that don't need a
+// chat round-trip to demonstrate. Segment-conditional overrides some docs
+// asked for (e.g. "disable QBR only for SMB") aren't representable in this
+// schema yet - a known simplification, not silently dropped.
+function seededOrgConfigBundle(overrides,featureFlags){
+  const b=axonDefaultBundle();
+  Object.keys(overrides.weights||{}).forEach(k=>{ b.riskWeights.weights[k]=overrides.weights[k]; });
+  Object.assign(b.riskWeights.thresholds,overrides.thresholds||{});
+  if(overrides.agingDays!=null) b.riskWeights.agingDays=overrides.agingDays;
+  if(overrides.agingBonus!=null) b.riskWeights.agingBonus=overrides.agingBonus;
+  (overrides.disabled||[]).forEach(k=>{ b.triggerEnabled[k]=false; });
+  (overrides.customTriggers||[]).forEach(c=>b.customTriggers.push(c));
+  if(featureFlags) Object.assign(b.orgFeatureFlags,featureFlags);
+  return b;
+}
+function seedNamedOrgConfigs(){
+  return {
+    'Axon 911':seededOrgConfigBundle({
+      weights:{case_blocked:4,negative_sentiment:4,case_aging:3,case_volume_spike:3,onboarding_stall:3,onboarding_no_plan:3,usage_drop:2,renewal_prep_stale:3},
+      agingDays:14,
+      customTriggers:[
+        {key:'operational_incident',label:'Operational incident (CAD/dispatch outage)',category:'escalation',weight:6},
+        {key:'go_live_readiness',label:'Go-live milestone overdue',category:'usage',weight:2},
+      ],
+    }),
+    'Commercial':seededOrgConfigBundle({
+      weights:{case_blocked:2,nps_csat_drop:1,no_exec_sponsor:1,usage_drop:0.5,growth_mix_stalled:2},
+      customTriggers:[
+        {key:'roi_not_documented',label:'No ROI/outcomes documented 90d post-go-live',category:'usage',weight:1},
+        {key:'drone_data_gap',label:'Drone usage data unavailable — verify manually',category:'manual',weight:0},
+      ],
+    }),
+    'Enterprise':seededOrgConfigBundle({
+      weights:{case_blocked:4,case_aging:3,no_exec_sponsor:3,renewal_stage_behind:3,growth_mix_stalled:2,renewal_prep_stale:3},
+      thresholds:{}, // renewal-prep window/QBR-days aren't in riskWeights - see RISK_RENEWAL_PREP_WINDOW_DAYS/RISK_QBR_OVERDUE_DAYS (global, not yet per-slot)
+    }),
+    'International':seededOrgConfigBundle({
+      weights:{onboarding_stall:3,onboarding_no_plan:3},
+      customTriggers:[
+        {key:'localization_gap',label:'Customer-facing materials not localized',category:'manual',weight:1},
+      ],
+    }),
+    'Law Enforcement':seededOrgConfigBundle({
+      weights:{renewal_prep_stale:2},
+      customTriggers:[
+        {key:'contact_goals_stale',label:'Contact-level goals not updated',category:'cadence',weight:1},
+      ],
+    },{productLineScorecard:true,npsTrend:true}),
+  };
+}
+let orgConfigSlots=LS.get('orgConfigSlots',null);
+if(!orgConfigSlots){ orgConfigSlots=Object.assign({'Demo Baseline':axonDefaultBundle()},seedNamedOrgConfigs()); LS.set('orgConfigSlots',orgConfigSlots); }
+let activeOrgConfigName=LS.get('activeOrgConfigName','Demo Baseline');
+if(!orgConfigSlots[activeOrgConfigName]) activeOrgConfigName=Object.keys(orgConfigSlots)[0]||'Demo Baseline';
+function saveOrgConfigSlots(){ LS.set('orgConfigSlots',orgConfigSlots); }
+function setActiveOrgConfig(name){
+  if(!orgConfigSlots[name]) return;
+  activeOrgConfigName=name; LS.set('activeOrgConfigName',activeOrgConfigName);
+  applyConfigBundle(JSON.parse(JSON.stringify(orgConfigSlots[name])));
+  toast('Switched to "'+name+'".');
+}
+function saveCurrentConfigAs(name){
+  name=(name||'').trim(); if(!name) return;
+  orgConfigSlots[name]=currentConfigBundle(); saveOrgConfigSlots();
+  activeOrgConfigName=name; LS.set('activeOrgConfigName',activeOrgConfigName);
+  toast('Saved as "'+name+'".');
+  route();
+}
+function resetActiveConfigToDefault(){
+  applyConfigBundle(axonDefaultBundle());
+  orgConfigSlots[activeOrgConfigName]=currentConfigBundle(); saveOrgConfigSlots();
+  toast('Reset "'+activeOrgConfigName+'" to Axon Default.');
+}
+function deleteOrgConfigSlot(name){
+  if(name==='Demo Baseline'){ toast('Demo Baseline can\'t be deleted.'); return; }
+  if(!confirm('Delete saved config "'+name+'"? This cannot be undone.')) return;
+  delete orgConfigSlots[name]; saveOrgConfigSlots();
+  if(activeOrgConfigName===name) setActiveOrgConfig('Demo Baseline'); else route();
+}
+// Applies whatever slot was last active immediately at load - assignment
+// only, no computeAll()/route() yet (STATE.accounts isn't populated until
+// the real boot sequence's own load() finishes and calls computeAll() itself
+// the normal way) - this just guarantees riskWeights/WEIGHTS/overrides
+// reflect the right slot from the very first real computeAll() onward.
+(function applyActiveConfigAtLoad(){
+  const b=JSON.parse(JSON.stringify(orgConfigSlots[activeOrgConfigName]));
+  riskWeights=b.riskWeights; WEIGHTS=b.WEIGHTS; adoptionCfg=b.adoptionCfg;
+  triggerEnabled=b.triggerEnabled; triggerLabelOverrides=b.triggerLabelOverrides; triggerCategoryOverrides=b.triggerCategoryOverrides;
+  customTriggers=b.customTriggers; orgFeatureFlags=b.orgFeatureFlags;
+})();
 // Parameterized by "as of" time so the timeline can show a trigger's exact
 // contribution when it fired vs. now (still open) vs. the moment it was
 // resolved (aging stops accruing once it's closed out). Returns base/aging
@@ -821,6 +1192,10 @@ function fireTrigger(acctId,type,sourceValue,thresholdValue,recommendedAction){
 // "draft email" click (requestTriggerAction) just picks up this
 // already-existing record rather than creating a fresh one.
 function fireTriggerWithCta(acctId,type,sourceValue,thresholdValue,recommendedAction){
+  // Single shared gate for every trigger type, built-in or custom - an org
+  // that disables a trigger just stops it firing here, nothing upstream
+  // needs to know or care which trigger types are currently active.
+  if(!triggerIsEnabled(type)) return;
   const isNew=!hasOpenTrigger(acctId,type);
   fireTrigger(acctId,type,sourceValue,thresholdValue,recommendedAction);
   if(isNew){
@@ -830,14 +1205,24 @@ function fireTriggerWithCta(acctId,type,sourceValue,thresholdValue,recommendedAc
 }
 function autoCreateCtaForNewTrigger(a,triggerType,recommendedAction){
   const category=CTA_CATEGORY_BY_TRIGGER[triggerType]||'manual';
-  if(category==='escalation'){ ensureEscalationCta(a.id,triggerType); return; }
   // Avoid stacking duplicates if this exact trigger already has a live CTA -
   // matters especially for the Test10 sandbox, which re-wipes trigger events
   // on every reload (resetTest10RiskBaseline), which would otherwise look
   // like a brand-new firing every time and spawn a fresh CTA each reload.
-  const existing=engagementCtas.find(c=>c.accountId===a.id && c.originatingTriggerType===triggerType && engagementCtaEffectiveStatus(c)!=='dismissed' && engagementCtaEffectiveStatus(c)!=='done');
+  // Escalations dedupe on category alone (only one live escalation per
+  // account at a time), same rule ensureEscalationCta itself used.
+  const existing = category==='escalation'
+    ? engagementCtas.find(c=>c.accountId===a.id && c.category==='escalation' && engagementCtaEffectiveStatus(c)!=='dismissed' && engagementCtaEffectiveStatus(c)!=='done')
+    : engagementCtas.find(c=>c.accountId===a.id && c.originatingTriggerType===triggerType && engagementCtaEffectiveStatus(c)!=='dismissed' && engagementCtaEffectiveStatus(c)!=='done');
   if(existing) return;
   if(category==='cadence'){ autoDraftCadenceCta(a); return; }
+  // Escalations get a real, unsent, prefilled draft here too (same as every
+  // other category) rather than ensureEscalationCta's auto-mark-sent
+  // placeholder - a trigger-driven escalation should land the CSM on a real
+  // "draft email - step 1" card to actually send, not a dead end that skips
+  // straight to the checklist with nothing to send. ensureEscalationCta
+  // itself is still used as-is for the manual "Start Escalation" button
+  // (Account 360), where there's no recommended action/template to draft from.
   const emailTemplate=RISK_ACTION_EMAIL_TEMPLATE[recommendedAction];
   const draft=emailTemplate?buildEmailDraft(emailTemplate,a.id):null;
   const c=createEngagementCta(a.id,category,triggerType);
@@ -846,13 +1231,32 @@ function autoCreateCtaForNewTrigger(a,triggerType,recommendedAction){
 }
 function evaluateRiskTriggers(){
   STATE.accounts.forEach(a=>{
+    // True sandbox for the 10 Test10 pilot accounts while Test10 is on: none
+    // of the underlying mock Salesforce-shaped data (cases, TAP, renewal
+    // stage, growth mix, onboarding, sentiment, cadence, QBR, exec sponsor)
+    // is allowed to auto-fire a trigger. The only two ways a Test10 account
+    // can move while sandboxed are (1) nps_csat_drop, driven purely by the
+    // real synced survey score below, and (2) a CSM manually calling
+    // simulateRiskTrigger from Surface Alert - that goes straight to
+    // fireTriggerWithCta and never runs through this function at all, so it
+    // still works untouched. Once Test10 is toggled off, the account's real
+    // snapshotted data returns and normal auto-firing resumes for it.
+    const sandboxed = riskTest10 && isTest10Account(a.id);
+    if(!sandboxed){
     const blockedDays=daysCaseBlocked(a), sla=riskSlaDays(a);
     if(blockedDays>sla) fireTriggerWithCta(a.id,'case_blocked',blockedDays,sla,'escalate_to_support_lead');
     if(a.usage && a.usage.adoptionPct!=null){
       const target=planAdoptionTarget(a);
       if(a.usage.adoptionPct<target) fireTriggerWithCta(a.id,'usage_drop',a.usage.adoptionPct,target,'draft_adoption_email');
     }
-    if(a.dclose!=null && a.dclose<=RISK_RENEWAL_PREP_WINDOW_DAYS && (a.dsAct==null||a.dsAct>RISK_RENEWAL_PREP_STALE_DAYS)){
+    // Contract-based renewal precision: prefer real Contract End Date - Notice
+    // Period ("days to renewal") over the Opportunity CloseDate proxy when a
+    // Contract record is present - not yet a live-queried object (no confirmed
+    // Contract fields in the org), so this only applies where contractEnd is
+    // seeded on a demo account; every other real account falls back to the
+    // existing dclose-based check unchanged.
+    const daysToRenewal = a.contractEnd!=null ? Math.floor((new Date(a.contractEnd)-new Date())/86400000)-(a.noticePeriodDays||0) : a.dclose;
+    if(daysToRenewal!=null && daysToRenewal<=RISK_RENEWAL_PREP_WINDOW_DAYS && (a.dsAct==null||a.dsAct>RISK_RENEWAL_PREP_STALE_DAYS)){
       fireTriggerWithCta(a.id,'renewal_prep_stale',a.dsAct,RISK_RENEWAL_PREP_STALE_DAYS,'draft_renewal_email');
     }
     const escNow=peekEscState(a.id);
@@ -866,12 +1270,16 @@ function evaluateRiskTriggers(){
       triggerEvents.filter(t=>t.accountId===a.id && t.triggerType==='escalation_opened' && isTriggerLive(t))
         .forEach(t=>{ t.status='resolved'; t.resolution={outcome:'escalated-resolved',note:'Escalation resolved',at:new Date().toISOString()}; });
     }
+    }
     // Consumes the NPS score straight from the Customer Pulse section (same
     // 3-tier threshold already established there: <9 = detractor). Escalates
     // rather than just drafting an email - a genuine detractor score usually
     // reflects a real unresolved problem a CSM can't personally fix by
     // emailing the customer; it needs to be routed to whoever actually can.
+    // Deliberately NOT inside the sandboxed guard above - this is the one
+    // signal Test10 sandbox mode is explicitly supposed to let through.
     if(a.nps!=null && a.nps<9) fireTriggerWithCta(a.id,'nps_csat_drop',a.nps,9,'escalate_to_support_lead');
+    if(sandboxed) return;
     if(a.tapStatus==='overdue') fireTriggerWithCta(a.id,'tap_refresh_due',a.tapDays,0,'schedule_tap_refresh');
     // Escalates rather than just a CTA - unworked case backlog is a support
     // capacity problem, not something a CSM can personally clear by email.
@@ -892,8 +1300,18 @@ function evaluateRiskTriggers(){
       const p=plans[a.id];
       const daysSincePurchase=daysSince(a.firstPurchase);
       const overdueMilestone = p && p.milestones && daysSincePurchase!=null ? p.milestones.find(m=>!m.done && m.day!=null && daysSincePurchase>m.day) : null;
-      if(overdueMilestone) fireTriggerWithCta(a.id,'onboarding_stall',daysSincePurchase,overdueMilestone.day,'draft_onboarding_email');
+      if(overdueMilestone) fireTriggerWithCta(a.id,'onboarding_stall',daysSincePurchase,overdueMilestone.day,'draft_onboarding_nudge_email');
+      // A narrower, earlier case than onboarding_stall above (which needs a
+      // plan to already exist with an overdue milestone) - this is a new
+      // logo with no plan at all yet, previously only surfaced as a
+      // disconnected "Onboard" worklist tag with no real record behind it.
+      if(!p) fireTriggerWithCta(a.id,'onboarding_no_plan',daysSincePurchase,0,'draft_onboarding_email');
     }
+    // Negative sentiment: same support-case-derived signal previously only
+    // surfaced as a disconnected "Sentiment risk" worklist tag - escalation,
+    // not just a CTA, since a negative sentiment trend usually reflects a
+    // real unresolved problem, same reasoning as the NPS/CSAT drop trigger.
+    if(a.sentTier==='neg') fireTriggerWithCta(a.id,'negative_sentiment',a.sentiment,50,'escalate_to_support_lead');
     // Cadence gap: reads directly off the account's own descriptor fields
     // (daysSinceLastTouch/expectedCadenceDays, set in scoreAccount) rather than
     // any separate cadence-tracking system - this is the "no engagement in N
@@ -902,6 +1320,27 @@ function evaluateRiskTriggers(){
     // own trigger; this one is the general "overdue for a routine touch" case.
     if(a.daysSinceLastTouch!=null && a.daysSinceLastTouch>a.expectedCadenceDays){
       fireTriggerWithCta(a.id,'cadence_gap',a.daysSinceLastTouch,a.expectedCadenceDays,'draft_cadence_email');
+    }
+    // Open case volume spike: a real signal off the same Case data already
+    // powering case_blocked/case_aging, just measuring COUNT rather than
+    // age/SLA - the "high ticket volume now, NPS drop follows" pattern often
+    // shows up together with nps_csat_drop on the same account.
+    if(a.openCases>=RISK_CASE_VOLUME_SPIKE_THRESHOLD) fireTriggerWithCta(a.id,'case_volume_spike',a.openCases,RISK_CASE_VOLUME_SPIKE_THRESHOLD,'escalate_to_support_lead');
+    // No executive sponsor on file: Contact-roster persona check - not yet a
+    // live-queried field (no confirmed persona/role field on Contact in the
+    // org), defaults true for every real account so this never falsely fires
+    // until a real data source exists; only demo-seeded accounts set it false.
+    if(a.hasExecSponsor===false) fireTriggerWithCta(a.id,'no_exec_sponsor','missing',null,'escalate_to_support_lead');
+    // QBR overdue: Event-object cadence check, same caveat as above - only
+    // fires where qbrDaysOverdue is demo-seeded, never for real accounts yet.
+    if(a.qbrDaysOverdue!=null && a.qbrDaysOverdue>RISK_QBR_OVERDUE_DAYS) fireTriggerWithCta(a.id,'qbr_overdue',a.qbrDaysOverdue,RISK_QBR_OVERDUE_DAYS,'draft_qbr_email');
+    // NPS trend (org-config gated: orgFeatureFlags.npsTrend) - fires on 2+
+    // consecutive declining quarters, not a single below-threshold reading
+    // like nps_csat_drop. Only ever has data to check on Test10 accounts
+    // (see seedNpsHistoryForTrend) until a real historical NPS source exists.
+    if(orgFeatureFlags.npsTrend && a.npsHistory && a.npsHistory.length>=3){
+      const h=a.npsHistory;
+      if(h[2].score<h[1].score && h[1].score<h[0].score) fireTriggerWithCta(a.id,'nps_trend_decline',h.map(x=>x.score).join('→'),null,'escalate_to_support_lead');
     }
   });
   saveTriggerEvents();
@@ -962,9 +1401,22 @@ function simulateRiskTrigger(acctId,triggerType){
     case_aging:{source:3,threshold:0,action:'escalate_to_support_lead'},
     renewal_stage_behind:{source:'Discovering',threshold:120,action:'draft_renewal_email'},
     growth_mix_stalled:{source:2,threshold:5,action:'draft_expansion_email'},
-    onboarding_stall:{source:60,threshold:30,action:'draft_onboarding_email'},
+    onboarding_stall:{source:60,threshold:30,action:'draft_onboarding_nudge_email'},
+    onboarding_no_plan:{source:45,threshold:0,action:'draft_onboarding_email'},
+    negative_sentiment:{source:35,threshold:50,action:'escalate_to_support_lead'},
+    case_volume_spike:{source:RISK_CASE_VOLUME_SPIKE_THRESHOLD+2,threshold:RISK_CASE_VOLUME_SPIKE_THRESHOLD,action:'escalate_to_support_lead'},
+    no_exec_sponsor:{source:'missing',threshold:null,action:'escalate_to_support_lead'},
+    qbr_overdue:{source:RISK_QBR_OVERDUE_DAYS+30,threshold:RISK_QBR_OVERDUE_DAYS,action:'draft_qbr_email'},
+    nps_trend_decline:{source:'declining 3 quarters',threshold:null,action:'escalate_to_support_lead'},
   };
-  const d=defs[triggerType]; if(!d) return;
+  // Custom triggers (org-invented, no bespoke fire condition) get a generic
+  // demo source/threshold and whichever recommended action already fits
+  // their declared category - same email-template machinery every built-in
+  // trigger's action already uses, nothing new to build per custom trigger.
+  const CUSTOM_TRIGGER_DEFAULT_ACTION={escalation:'escalate_to_support_lead',usage:'draft_adoption_email',renewal:'draft_renewal_email',case_watch:'schedule_tap_refresh',cadence:'draft_cadence_email',manual:'draft_cadence_email'};
+  const cd=customTriggerDef(triggerType);
+  const d=defs[triggerType] || (cd ? {source:'manual',threshold:null,action:CUSTOM_TRIGGER_DEFAULT_ACTION[cd.category]||'draft_cadence_email'} : null);
+  if(!d) return;
   // Goes through the same fireTriggerWithCta path as every real engine-fired
   // trigger, not a bare push into triggerEvents - otherwise this demo button
   // moves the kanban card but never creates the CTA/escalation record behind
@@ -972,6 +1424,7 @@ function simulateRiskTrigger(acctId,triggerType){
   // Escalations/Active CTAs that broke the Test 10 demo.
   fireTriggerWithCta(acctId,triggerType,d.source,d.threshold,d.action);
   if(triggerType==='escalation_opened') setEscStatus(acctId,'Open');
+  if(HEALTH_REVEALING_TRIGGERS.has(triggerType)) revealTest10Health(acctId);
   saveTriggerEvents();
   route(); if(currentRiskCardId===acctId) openRiskCard(acctId);
 }
@@ -1027,12 +1480,14 @@ function requestResolveTrigger(acctId,triggerEventId){
 const RISK_ACTION_EMAIL_TEMPLATE={
   draft_renewal_email:'cust_renewal',
   draft_adoption_email:'cust_product',
-  draft_expansion_email:'cust_product',
+  draft_expansion_email:'cust_expansion',
   draft_onboarding_email:'cust_welcome',
+  draft_onboarding_nudge_email:'cust_onboarding_nudge',
   schedule_tap_refresh:'cust_tap',
   escalate_to_support_lead:'cust_save',
   review_escalation:'cust_save',
-  draft_cadence_email:'cust_followup',
+  draft_cadence_email:'cust_checkin',
+  draft_qbr_email:'cust_checkin',
 };
 // Jumps to wherever a trigger's action actually lives - the same destination
 // whether it's still open ("needs to be taken") or already pending/resolved
@@ -1041,54 +1496,48 @@ const RISK_ACTION_EMAIL_TEMPLATE={
 // built out further) - closest available today is its history log. Escalation
 // and TAP refresh both have a more specific downstream home (the escalation
 // checklist, the created CTA) once their email has actually been sent.
+// Finds (or, defensively, creates) the real CTA/escalation record a trigger's
+// recommended action belongs to - reused by both goToActionDestination
+// (clicking the trigger label) and requestTriggerAction (clicking the actual
+// "Take action" button), so either entry point lands on the same chevron -
+// never the separate Email Outreach composer. That chevron already has its
+// own draft-email step (Send + AI-draft), so there's no need to route through
+// a second, disconnected compose surface.
+function ctaForTriggerAction(t){
+  const a=STATE.accounts.find(x=>x.id===t.accountId); if(!a) return null;
+  const category=CTA_CATEGORY_BY_TRIGGER[t.triggerType]||'manual';
+  let engC = category==='escalation'
+    ? engagementCtas.find(c=>c.accountId===a.id && c.category==='escalation' && engagementCtaEffectiveStatus(c)!=='dismissed' && engagementCtaEffectiveStatus(c)!=='done')
+    : engagementCtas.find(c=>c.accountId===a.id && c.originatingTriggerType===t.triggerType && engagementCtaEffectiveStatus(c)!=='dismissed' && engagementCtaEffectiveStatus(c)!=='done');
+  if(!engC){
+    // Shouldn't normally happen (fireTriggerWithCta already auto-creates this
+    // the moment the trigger fires) - created defensively so the action
+    // always has somewhere real to land.
+    engC=createEngagementCta(a.id,category,t.triggerType);
+    const emailTemplate=RISK_ACTION_EMAIL_TEMPLATE[t.recommendedAction];
+    const draft=emailTemplate?buildEmailDraft(emailTemplate,a.id):null;
+    if(draft){ engC.steps[0].subject=draft.subject; engC.steps[0].body=draft.body; engC.steps[0].recipient=draft.to; }
+    saveEngagementCtas();
+  }
+  return engC;
+}
 function goToActionDestination(triggerEventId){
   const t=triggerEvents.find(x=>x.id===triggerEventId); if(!t) return;
-  if(t.recommendedAction==='escalate_to_support_lead' || t.recommendedAction==='review_escalation'){
-    closeRiskCard();
-    const engC=engagementCtas.find(c=>c.accountId===t.accountId && c.category==='escalation' && engagementCtaEffectiveStatus(c)!=='dismissed' && engagementCtaEffectiveStatus(c)!=='done');
-    if(engC) openEngagementCta(engC.id); else setTab('escalations');
-    return;
-  }
-  if(t.recommendedAction==='schedule_tap_refresh'){
-    closeRiskCard();
-    setTab('activectas');
-    return;
-  }
   closeRiskCard();
-  setTab('emails');
-  setTimeout(()=>{ const el=document.getElementById('emailHistoryCard'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); },80);
+  const engC=ctaForTriggerAction(t);
+  if(engC) openEngagementCta(engC.id); else setTab(t.recommendedAction==='schedule_tap_refresh'?'activectas':'escalations');
 }
-// Recommended actions don't need a typed comment - they're not a subjective
-// judgment call (that's what override/dismiss/resolve are for), just
-// executing the suggested next step. Clicking always opens the real Email
-// Outreach composer; the trigger only moves to pending once the CSM actually
-// confirms sending it (see emailRecordDraft), which is also where the actual
-// escalation/CTA side effect fires - not before, so nothing "happens" until
-// the email genuinely goes out.
+// Recommended actions land straight on the real CTA/escalation chevron -
+// never the separate Email Outreach composer. The trigger only moves to
+// pending once the CSM actually sends from that chevron (see
+// sendEngagementCtaDraft), which is also where the score/risk-stage side
+// effect fires - not before, so nothing "happens" until the email genuinely
+// goes out.
 function requestTriggerAction(triggerEventId){
   const t=triggerEvents.find(x=>x.id===triggerEventId); if(!t) return;
-  const a=STATE.accounts.find(x=>x.id===t.accountId); if(!a) return;
-  const emailTemplate=RISK_ACTION_EMAIL_TEMPLATE[t.recommendedAction];
-  if(!emailTemplate) return; // every action maps to a template now - see RISK_ACTION_EMAIL_TEMPLATE
-  emailComposeTriggerId=triggerEventId;
-  // The CTA is created the moment the action is taken (not only once the
-  // email is actually sent), so it shows up as an open row in Client
-  // Engagement right away - even if the CSM gets pulled into the composer
-  // and navigates away before sending. Reuses any already-eagerly-created,
-  // still-unsent CTA for this same trigger instead of stacking duplicates.
-  let engC=engagementCtas.find(c=>c.accountId===a.id && c.originatingTriggerType===t.triggerType && !c.steps[0].sent && c.status!=='dismissed');
-  if(!engC){
-    engC=createEngagementCta(a.id,CTA_CATEGORY_BY_TRIGGER[t.triggerType]||'manual',t.triggerType);
-    // Pre-fill with the same template-filled content the composer is about to
-    // show, so the Drafts-tab row reads real content immediately instead of
-    // "(no subject yet)" until the CSM actually sends.
-    const draft=buildEmailDraft(emailTemplate,a.id);
-    if(draft){ engC.steps[0].subject=draft.subject; engC.steps[0].body=draft.body; engC.steps[0].recipient=draft.to; }
-  }
-  emailComposeCtaId=engC.id;
-  saveEngagementCtas();
   closeRiskCard();
-  startEmailCompose(emailTemplate,a.id);
+  const engC=ctaForTriggerAction(t);
+  if(engC) openEngagementCta(engC.id);
 }
 function requestDismissTrigger(acctId,triggerEventId){
   const a=STATE.accounts.find(x=>x.id===acctId); const t=triggerEvents.find(x=>x.id===triggerEventId); if(!a||!t) return;
@@ -1114,7 +1563,7 @@ function confirmRiskOverride(){
   }
   if(mode==='resolve'){
     const t=triggerEvents.find(x=>x.id===triggerEventId);
-    if(t){ t.status='resolved'; t.resolution={outcome:'resolved',note:reason,at:new Date().toISOString()}; saveTriggerEvents(); }
+    if(t){ t.status='resolved'; t.resolution={outcome:'resolved',note:reason,at:new Date().toISOString()}; saveTriggerEvents(); if(HEALTH_REVEALING_TRIGGERS.has(t.triggerType)) revealTest10Health(acctId); }
     finish();
     return;
   }
@@ -1173,6 +1622,21 @@ let lastKnownRiskStage={}, lastKnownRiskScore={};
 // timed toast that can fade before anyone notices, per spec: acknowledgment
 // = opening the card, not a fixed number of seconds passing.
 let unackStageChange={}; // acctId -> {worse:bool, delta:number}
+// Runs for every account on every route(), not just when the kanban itself
+// renders - so a trigger firing while a CSM is on a completely different tab
+// still lights up the nav badge immediately, not only once they happen to
+// visit Accounts & Risk next.
+function detectRiskStageShifts(){
+  STATE.accounts.forEach(a=>{
+    if(isChurned(a.id)) return;
+    const stage=getRiskStage(a), score=riskScore(a);
+    const prevStage=lastKnownRiskStage[a.id], prevScore=lastKnownRiskScore[a.id];
+    if(prevStage!=null && prevStage!==stage){
+      unackStageChange[a.id]={worse:score>(prevScore??score),delta:Math.abs(score-(prevScore??score)),fromStage:prevStage,toStage:stage};
+    }
+    lastKnownRiskStage[a.id]=stage; lastKnownRiskScore[a.id]=score;
+  });
+}
 function riskCardHtml(a){
   const stage=getRiskStage(a);
   const score=riskScore(a);
@@ -1186,14 +1650,6 @@ function riskCardHtml(a){
   // because anything new happened - entirely preventable, flagged distinctly
   // from "a new issue appeared" so a CSM can tell the two apart at a glance.
   const isAging=openTriggers.some(t=>triggerWeightParts(t,a,new Date()).agingBonus>0);
-  // Stage-change flash: score up (worse, moves right toward Active Risk) = red
-  // +N; score down (better, moves left toward Stable) = green -N. Only fires
-  // on a genuine transition since the last render, not on every render.
-  const prevStage=lastKnownRiskStage[a.id], prevScore=lastKnownRiskScore[a.id];
-  if(prevStage!=null && prevStage!==stage){
-    unackStageChange[a.id]={worse:score>(prevScore??score),delta:Math.abs(score-(prevScore??score)),fromStage:prevStage,toStage:stage};
-  }
-  lastKnownRiskStage[a.id]=stage; lastKnownRiskScore[a.id]=score;
   const unack=unackStageChange[a.id];
   const flashClass=unack?(unack.worse?' flash-worse':' flash-better'):'';
   const flashBadge=unack?`<span class="risk-flash-badge ${unack.worse?'p-red':'p-green'}">${unack.worse?'+':'−'}${unack.delta}</span>`:'';
@@ -1239,7 +1695,101 @@ function riskColumnHtml(stage,accts){
 // it appear in Escalations/Active CTAs, which only works if all three pages
 // agree on the same scoped set of accounts.
 let riskTest10=false;
-function setRiskTest10(v){ riskTest10=v; route(); }
+// Test10 "clean slate" - CSAT/NPS/Health start blank the moment Test10 is
+// switched on (simulating "no data pulled yet"), and only un-blank per
+// account once a real demo action represents a fresh pull for that specific
+// account: a survey response for NPS/CSAT, or one of Health's own
+// formula-relevant triggers (case_aging/case_blocked/cadence_gap/
+// renewal_prep_stale/renewal_stage_behind) firing or resolving for Health.
+// NPS-drop and TAP-refresh - this demo's other two triggers - deliberately
+// do NOT reveal Health, since neither actually feeds Health's formula.
+let test10Snapshot=LS.get('test10Snapshot',null); // {acctId:{nps,csat,health,tier,comps,riskARR}} while blanked, else null
+let test10Revealed=LS.get('test10Revealed',{}); // acctId -> {npsCsat:bool, health:bool}
+function saveTest10Snapshot(){ LS.set('test10Snapshot',test10Snapshot); }
+function saveTest10Revealed(){ LS.set('test10Revealed',test10Revealed); }
+const HEALTH_REVEALING_TRIGGERS=new Set(['case_aging','case_blocked','cadence_gap','renewal_prep_stale','renewal_stage_behind']);
+function revealTest10Health(acctId){
+  if(!isTest10Account(acctId)) return;
+  test10Revealed[acctId]=test10Revealed[acctId]||{};
+  if(!test10Revealed[acctId].health){ test10Revealed[acctId].health=true; saveTest10Revealed(); }
+}
+function revealTest10NpsCsat(acctId){
+  if(!isTest10Account(acctId)) return;
+  test10Revealed[acctId]=test10Revealed[acctId]||{};
+  if(!test10Revealed[acctId].npsCsat){ test10Revealed[acctId].npsCsat=true; saveTest10Revealed(); }
+}
+function setRiskTest10(v){
+  const wasOn=riskTest10;
+  riskTest10=v;
+  if(v && !wasOn){
+    const snap={};
+    TEST10_ACCOUNTS.forEach(name=>{
+      const a=STATE.accounts.find(x=>x.name===name); if(!a) return;
+      snap[a.id]={nps:a.nps,csatOverride:csat[a.id]??null,health:a.health,tier:a.tier,comps:a.comps,riskARR:a.riskARR};
+    });
+    test10Snapshot=snap; test10Revealed={};
+    saveTest10Snapshot(); saveTest10Revealed();
+    // Blanking otherwise only happens inside computeAll() (on the next full
+    // reload) - without forcing it here too, toggling Test10 on mid-session
+    // left every account's real nps/health/tier/comps/riskARR fully visible
+    // (Account & CSM tabs kept showing real numbers) until a reload finally
+    // ran computeAll() again.
+    applyTest10DataBlanking();
+  } else if(!v && wasOn && test10Snapshot){
+    let csatChanged=false;
+    Object.keys(test10Snapshot).forEach(id=>{
+      const a=STATE.accounts.find(x=>x.id===id); if(!a) return;
+      const s=test10Snapshot[id];
+      a.nps=s.nps; a.health=s.health; a.tier=s.tier; a.comps=s.comps; a.riskARR=s.riskARR;
+      if(s.csatOverride!=null) csat[id]=s.csatOverride; else delete csat[id];
+      csatChanged=true;
+    });
+    if(csatChanged) LS.set('csat',csat);
+    test10Snapshot=null; test10Revealed={};
+    saveTest10Snapshot(); saveTest10Revealed();
+  }
+  route();
+}
+// Explicit, opt-in "start the demo over" action - deliberately NOT run
+// automatically on every toggle-to-on (that was tried and reverted: it
+// silently wiped in-progress CTAs/escalations any time someone flipped to
+// Full book and back mid-session, which is a completely normal thing to do
+// and broke click-through into records that should still have existed). This
+// is the one place a full wipe + re-blank happens outside of a real page
+// reload, and only when the CSM actually asks for it.
+function resetTest10Demo(){
+  if(!confirm('Reset the Test10 demo? This clears every CTA, escalation, and success plan for the 10 pilot accounts, and re-blanks NPS/health until revealed again.')) return;
+  resetTest10RiskBaseline();
+  const snap={};
+  TEST10_ACCOUNTS.forEach(name=>{
+    const a=STATE.accounts.find(x=>x.name===name); if(!a) return;
+    const base=(test10Snapshot && test10Snapshot[a.id]) || {nps:a.nps,csatOverride:csat[a.id]??null,health:a.health,tier:a.tier,comps:a.comps,riskARR:a.riskARR};
+    snap[a.id]=base;
+  });
+  test10Snapshot=snap; test10Revealed={};
+  saveTest10Snapshot(); saveTest10Revealed();
+  applyTest10DataBlanking();
+  toast('Test10 demo reset — clean slate.');
+  route();
+}
+// Runs at the end of every computeAll() - overwrites whatever scoreAccount()
+// etc. just (re)computed for a Test10 account's still-blanked fields, so the
+// blank state survives every recompute until that specific field is revealed.
+function applyTest10DataBlanking(){
+  if(!riskTest10 || !test10Snapshot) return;
+  TEST10_ACCOUNTS.forEach(name=>{
+    const a=STATE.accounts.find(x=>x.name===name); if(!a) return;
+    const rev=test10Revealed[a.id]||{};
+    if(!rev.npsCsat){ a.nps=null; a.csat=null; }
+    if(!rev.health){ a.health=null; a.tier=null; a.comps=[]; a.riskARR=null; }
+  });
+}
+// Single shared quarter toggle for the whole app - every page that used to
+// keep its own independent {year,q} selection now reads/writes this one
+// instead, so picking a quarter anywhere applies everywhere.
+let globalQSel=null;
+function setGlobalQYear(y){ const cur=globalQSel||defaultQSel(); globalQSel={year:+y,q:cur.q}; route(); }
+function setGlobalQQ(q){ const cur=globalQSel||defaultQSel(); globalQSel={year:cur.year,q:+q}; route(); }
 function viewRiskKanban(accts){
   const scopedAccts = riskTest10 ? STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name)) : accts;
   const alertOpts=Object.keys(RISK_TRIGGER_LABELS).map(k=>`<option value="${k}"${riskAlertFilter===k?' selected':''}>${esc(RISK_TRIGGER_LABELS[k])}</option>`).join('');
@@ -1259,27 +1809,176 @@ function viewRiskKanban(accts){
         <select onchange="setRiskAlertFilter(this.value)"><option value="all"${riskAlertFilter==='all'?' selected':''}>All alerts</option>${alertOpts}</select>
       </label>
       <button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setRiskTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book':'Test 10 (all Stable)'}</button>
+      ${riskTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()" title="Pull the latest NPS/CSAT survey responses and re-evaluate triggers">↻ Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():''}</span><button type="button" class="btn sm" onclick="resetTest10Demo()" title="Clear every CTA/escalation/plan for the 10 pilot accounts and re-blank NPS/health">⟲ Reset demo</button>`:''}
     </span></h3>
     <div class="kanban-board">${RISK_STAGES.map((s,i)=>{
       const sepAfter={healthy:'var(--green)',atrisk:'var(--amber)',escalated:'var(--red)'};
       const sep=sepAfter[s]?`<div class="kanban-sep" style="background:${sepAfter[s]}"></div>`:'';
       return riskColumnHtml(s,scopedAccts)+sep;
     }).join('')}</div>
-  </div>
-  ${riskWeightsPanelHtml()}`;
+  </div>`;
+}
+// ---- Org config: slot switcher + full trigger editor (enable/label/category/
+// weight) + custom trigger builder. This is the actual surface an org's
+// settings change through - the chat feature (once built) just writes to the
+// exact same functions a CSM clicking these controls would call.
+function triggerWeight(key){ const c=customTriggerDef(key); return c ? c.weight : (riskWeights.weights[key]??1); }
+function setTriggerWeight(key,v){
+  const val=Math.max(0,+v||0); const c=customTriggerDef(key);
+  if(c){ c.weight=val; LS.set('customTriggers',customTriggers); } else { riskWeights.weights[key]=val; saveRiskWeights(); }
+  route();
+}
+function setTriggerEnabled(key,v){ triggerEnabled[key]=!!v; LS.set('triggerEnabled',triggerEnabled); route(); }
+function setTriggerLabelOverride(key,v){
+  v=(v||'').trim();
+  if(v && v!==RISK_TRIGGER_LABELS_BASE[key]) triggerLabelOverrides[key]=v; else delete triggerLabelOverrides[key];
+  LS.set('triggerLabelOverrides',triggerLabelOverrides); route();
+}
+function setTriggerCategoryOverride(key,v){ triggerCategoryOverrides[key]=v; LS.set('triggerCategoryOverrides',triggerCategoryOverrides); route(); }
+function addCustomTrigger(){
+  const keyEl=$('#newTriggerKey'),labelEl=$('#newTriggerLabel'),catEl=$('#newTriggerCategory'),wEl=$('#newTriggerWeight');
+  let key=(keyEl&&keyEl.value||'').trim().toLowerCase().replace(/[^a-z0-9_]+/g,'_');
+  const label=(labelEl&&labelEl.value||'').trim();
+  if(!key||!label){ toast('Give the trigger a key and a label.'); return; }
+  if(customTriggerDef(key)||RISK_TRIGGER_LABELS_BASE[key]){ toast('That trigger key already exists — pick a unique one.'); return; }
+  customTriggers.push({key,label,category:(catEl&&catEl.value)||'manual',weight:Math.max(0,+(wEl&&wEl.value)||1)});
+  LS.set('customTriggers',customTriggers);
+  toast('Added "'+label+'" — enable it below, or fire it from any account\'s Simulate list.');
+  route();
+}
+function removeCustomTrigger(key){
+  if(!confirm('Remove custom trigger "'+key+'"? Any currently-open events of this type stay on the board but the trigger itself won\'t fire again.')) return;
+  customTriggers=customTriggers.filter(c=>c.key!==key); LS.set('customTriggers',customTriggers);
+  delete triggerEnabled[key]; delete triggerLabelOverrides[key]; delete triggerCategoryOverrides[key];
+  LS.set('triggerEnabled',triggerEnabled); LS.set('triggerLabelOverrides',triggerLabelOverrides); LS.set('triggerCategoryOverrides',triggerCategoryOverrides);
+  route();
+}
+const ORG_CONFIG_CATEGORY_OPTIONS=['escalation','renewal','usage','case_watch','cadence','manual'];
+function orgConfigCategoryLabel(cat){ return cat==='escalation'?'Escalation':(CTA_CATEGORY_LABELS[cat]||cat); }
+function orgConfigSlotSwitcherHtml(){
+  const names=Object.keys(orgConfigSlots);
+  return `<div class="card"><h3>Active configuration <span class="hint">every CSM org can run its own instance of this - weights, timing, on/off, even brand-new triggers - on top of the same fixed pipeline</span></h3>
+    <div class="row-actions" style="flex-wrap:wrap;align-items:center">
+      <label class="mini">Config
+        <select class="select" style="display:block;margin-top:4px;min-width:200px" onchange="setActiveOrgConfig(this.value)">
+          ${names.map(n=>`<option value="${esc(n)}" ${n===activeOrgConfigName?'selected':''}>${esc(n)}</option>`).join('')}
+        </select>
+      </label>
+      <button type="button" class="btn sm" onclick="const n=prompt('Save current settings as a new config named:'); if(n) saveCurrentConfigAs(n)">Save current as new…</button>
+      <button type="button" class="btn sm" onclick="resetActiveConfigToDefault()">Reset "${esc(activeOrgConfigName)}" to Axon Default</button>
+      ${activeOrgConfigName!=='Demo Baseline'?`<button type="button" class="btn sm" style="border-color:var(--red);color:var(--red)" onclick="deleteOrgConfigSlot('${esc(activeOrgConfigName)}')">Delete this config</button>`:''}
+    </div>
+  </div>`;
 }
 function riskWeightsPanelHtml(){
-  const weightRows=Object.keys(riskWeights.weights).map(k=>`<label class="mini" style="display:flex;justify-content:space-between;gap:8px">${esc(riskWeightLabel(k))}<input type="number" min="0" style="width:60px" value="${riskWeights.weights[k]}" onchange="setRiskWeight('${k}',this.value)"></label>`).join('');
-  return `<div class="card"><h3>Tune trigger weights & thresholds</h3>
-    <p class="mini" style="line-height:1.7">Every open trigger contributes points based on its weight below (an open escalation's points scale with its real severity, not just whether one exists). Points also grow the longer a trigger stays open. The total score places the account on the board.</p>
-    <div class="grid2" style="gap:8px 20px">${weightRows}</div>
+  const allKeys=Object.keys(RISK_TRIGGER_LABELS);
+  const rows=allKeys.map(k=>{
+    const cust=customTriggerDef(k);
+    const enabled=triggerIsEnabled(k);
+    return `<tr style="${enabled?'':'opacity:.5'}">
+      <td><input type="checkbox" ${enabled?'checked':''} onchange="setTriggerEnabled('${k}',this.checked)"></td>
+      <td><input type="text" class="select" style="min-width:200px" value="${esc(RISK_TRIGGER_LABELS[k]||'')}" onchange="setTriggerLabelOverride('${k}',this.value)"></td>
+      <td><select class="select" onchange="setTriggerCategoryOverride('${k}',this.value)">${ORG_CONFIG_CATEGORY_OPTIONS.map(c=>`<option value="${c}" ${c===CTA_CATEGORY_BY_TRIGGER[k]?'selected':''}>${esc(orgConfigCategoryLabel(c))}</option>`).join('')}</select></td>
+      <td><input type="number" min="0" style="width:60px" value="${triggerWeight(k)}" onchange="setTriggerWeight('${k}',this.value)"></td>
+      <td class="mini">${cust?'Custom':'Built-in'}</td>
+      <td>${cust?`<button type="button" class="btn sm" style="border-color:var(--red);color:var(--red)" onclick="removeCustomTrigger('${k}')">Remove</button>`:''}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card"><h3>Tune trigger weights, labels, routing & on/off</h3>
+    <p class="mini" style="line-height:1.7">Every open, enabled trigger contributes points based on its weight (an open escalation's points scale with its real severity, not just whether one exists). Points also grow the longer a trigger stays open. Disabling a trigger stops it from firing at all - it simply never happens for this config, everywhere in the app.</p>
+    <div style="overflow-x:auto"><table><thead><tr><th>On</th><th>Label</th><th>Routes to</th><th>Weight</th><th>Type</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="row-actions" style="margin-top:14px;flex-wrap:wrap">
       <label class="mini">Elevated Risk at score ≥ <input type="number" min="0" style="width:50px" value="${riskWeights.thresholds.elevated}" onchange="setRiskThreshold('elevated',this.value)"></label>
       <label class="mini">Active Risk at score ≥ <input type="number" min="0" style="width:50px" value="${riskWeights.thresholds.active}" onchange="setRiskThreshold('active',this.value)"></label>
       <label class="mini">Aging: +bonus every <input type="number" min="0" style="width:50px" value="${riskWeights.agingDays}" onchange="setRiskAging('agingDays',this.value)"> days a trigger stays open, bonus = <input type="number" min="0" style="width:50px" value="${riskWeights.agingBonus}" onchange="setRiskAging('agingBonus',this.value)"></label>
     </div>
-    <div class="row-actions" style="margin-top:10px"><button type="button" class="btn sm" onclick="resetRiskWeights()">Reset defaults</button></div>
+  </div>
+  <div class="card"><h3>Add a custom trigger <span class="hint">never-planned-for input - just needs a category + weight, same as any built-in trigger</span></h3>
+    <div class="row-actions" style="flex-wrap:wrap">
+      <input type="text" id="newTriggerKey" class="select" placeholder="key (e.g. radio_refresh_due)" style="min-width:180px">
+      <input type="text" id="newTriggerLabel" class="select" placeholder="Label shown in the app" style="min-width:220px">
+      <select id="newTriggerCategory" class="select">${ORG_CONFIG_CATEGORY_OPTIONS.map(c=>`<option value="${c}">${esc(orgConfigCategoryLabel(c))}</option>`).join('')}</select>
+      <input type="number" id="newTriggerWeight" class="select" min="0" value="1" style="width:70px">
+      <button type="button" class="btn sm primary" onclick="addCustomTrigger()">Add trigger</button>
+    </div>
+    <p class="mini" style="margin-top:8px">Once added, enable it above - it'll appear in every Simulate list and Surface-alert filter automatically, and route into the same Escalation/CTA machinery as everything else.</p>
   </div>`;
+}
+// ---- Org config chat: a real model call, not the human-in-the-loop pattern -
+// this needs actual judgment (which org's context applies, does the request
+// fit the fixed pipeline) every time, so there's no manual fallback for it;
+// it just requires ANTHROPIC_API_KEY to be set. ----
+let orgConfigChatLog=[]; // session-only: [{role,text,matchedOrg,diff,limitation,applied}]
+function orgConfigChatHtml(){
+  const entries=orgConfigChatLog.map((e,i)=>{
+    if(e.role==='user') return `<div class="mini" style="margin:10px 0 4px"><b>You:</b> ${esc(e.text)}</div>`;
+    return `<div class="card" style="box-shadow:none;margin:4px 0 10px;background:var(--panel2);border:1px solid ${e.limitation?'var(--amber)':'var(--violet)'}">
+      <div class="mini" style="margin-bottom:4px">${e.matchedOrg?`<span class="pill p-violet">${esc(e.matchedOrg)}</span>`:''}${e.limitation?' <span class="pill p-amber">Not supported as-is</span>':''}${e.applied?' <span class="pill p-green">Applied</span>':''}</div>
+      <p class="mini" style="font-weight:600;color:var(--ink);margin-bottom:4px">${e.limitation?'Why this doesn\'t fit:':'What this changes:'}</p>
+      <p class="mini">${esc(e.text)}</p>
+      ${e.diff?`<p class="mini" style="margin:10px 0 4px;color:var(--muted2)">Config diff (JSON) — this is exactly what "Apply" will write:</p>
+        <pre class="mini" style="white-space:pre-wrap;background:var(--panel);padding:8px;border-radius:6px;max-height:200px;overflow:auto">${esc(JSON.stringify(e.diff,null,2))}</pre>
+        <div class="row-actions" style="margin-top:8px">${e.applied?'':`<button type="button" class="btn sm primary" onclick="applyOrgConfigChatDiff(${i})">Apply this change</button>`}</div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="card"><h3>Ask about your org's settings <span class="hint">real model call — a running conversation, not one-shot: keep adding requests, each reply refines the same proposal, until you click Apply</span></h3>
+    <div id="orgConfigChatLog">${entries||'<p class="mini">No requests yet — try "Weight a blocked case higher for our 911 team" or "We don\'t care about QBRs."</p>'}</div>
+    <textarea id="orgConfigChatInput" class="select" rows="2" style="width:100%;margin-top:8px" placeholder="Describe what you want changed, or add to / adjust what's already proposed above…"></textarea>
+    <div class="row-actions" style="margin-top:8px"><button type="button" class="btn sm primary" id="orgConfigChatBtn" onclick="requestOrgConfigChat()">Ask</button>${orgConfigChatLog.length?`<button type="button" class="btn sm" onclick="if(confirm('Clear this conversation? Nothing already applied is affected.')){orgConfigChatLog=[];route();}">Clear conversation</button>`:''}</div>
+    <div id="orgConfigChatStatus" class="mini" style="margin-top:6px;color:var(--muted2)"></div>
+  </div>`;
+}
+// Continuous conversation, not one-shot per message: every request sends the
+// prior exchanges (text + whatever diff was on the table at that point) so a
+// follow-up like "also weight X higher" or "actually make that a CTA not an
+// escalation" refines the SAME running proposal instead of starting over.
+// The backend is instructed to always return the full cumulative diff given
+// this history, not just the delta implied by the newest message alone.
+async function requestOrgConfigChat(){
+  const input=$('#orgConfigChatInput'); const msg=(input&&input.value||'').trim();
+  if(!msg) return;
+  const btn=$('#orgConfigChatBtn'), statusEl=$('#orgConfigChatStatus');
+  const history=orgConfigChatLog.map(e=>({role:e.role,text:e.text,diff:e.diff||null}));
+  orgConfigChatLog.push({role:'user',text:msg});
+  if(input) input.value='';
+  if(btn){ btn.disabled=true; btn.textContent='Thinking…'; }
+  route();
+  try{
+    const res=await fetch('/api/org-config-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,currentConfig:JSON.stringify(currentConfigBundle()),history})});
+    const d=await res.json();
+    if(!res.ok){ orgConfigChatLog.push({role:'assistant',text:d.detail||'Could not process that request.'}); }
+    else{ orgConfigChatLog.push({role:'assistant',text:d.limitation||d.explanation,matchedOrg:d.matchedOrg,diff:d.diff,limitation:d.limitation}); }
+  }catch(e){ orgConfigChatLog.push({role:'assistant',text:'Could not reach the backend.'}); }
+  if(btn){ btn.disabled=false; btn.textContent='Ask'; }
+  route();
+  setTimeout(()=>{ const el=$('#orgConfigChatInput'); if(el) el.focus(); },50);
+}
+function applyOrgConfigChatDiff(idx){
+  const e=orgConfigChatLog[idx]; if(!e||!e.diff) return;
+  const diff=e.diff;
+  if(diff.triggers) Object.keys(diff.triggers).forEach(key=>{
+    const t=diff.triggers[key];
+    if(t.enabled!=null) triggerEnabled[key]=!!t.enabled;
+    if(t.label!=null){ if(t.label!==RISK_TRIGGER_LABELS_BASE[key]) triggerLabelOverrides[key]=t.label; else delete triggerLabelOverrides[key]; }
+    if(t.category!=null) triggerCategoryOverrides[key]=t.category;
+    if(t.weight!=null){ const c=customTriggerDef(key); if(c) c.weight=+t.weight; else riskWeights.weights[key]=+t.weight; }
+  });
+  if(diff.customTriggers) diff.customTriggers.forEach(ct=>{
+    if(ct.key && !customTriggerDef(ct.key) && !RISK_TRIGGER_LABELS_BASE[ct.key]) customTriggers.push({key:ct.key,label:ct.label||ct.key,category:ct.category||'manual',weight:ct.weight??1});
+  });
+  LS.set('triggerEnabled',triggerEnabled); LS.set('triggerLabelOverrides',triggerLabelOverrides); LS.set('triggerCategoryOverrides',triggerCategoryOverrides);
+  LS.set('customTriggers',customTriggers); saveRiskWeights();
+  e.applied=true;
+  toast('Applied — settings updated.');
+  route();
+  // Applying is the point this stops being a scratch conversation and
+  // becomes a real, named config slot - same slot system Configure Org Data
+  // already uses (orgConfigSlots), just prompted right at the moment of
+  // commit instead of a separate "Save current as new…" step.
+  setTimeout(()=>{
+    const n=prompt('Save this configuration as (a new or existing config name):', activeOrgConfigName!=='Axon Default'?activeOrgConfigName:'');
+    if(n) saveCurrentConfigAs(n);
+  },50);
 }
 // HTML5 drag/drop, wired after every render (cards are recreated each time).
 function wireRiskKanbanDnD(){
@@ -1306,6 +2005,17 @@ function riskTimelineFor(acctId){
     if(t.resolution) entries.push({t:t.resolution.at,kind:'trigger-resolved',data:t});
   });
   ctas.filter(c=>c.acctId===acctId).forEach(c=>entries.push({t:c.createdAt,kind:'cta',data:c}));
+  // Active CTAs (non-escalation - escalation's own step tracking lives in
+  // escState, handled separately below) each get their own dated entry per
+  // step advance, same principle as the escalation checklist: every step
+  // sent/done is a new timeline item, not an in-place update.
+  engagementCtas.filter(c=>c.accountId===acctId && c.category!=='escalation').forEach(c=>{
+    entries.push({t:c.createdAt,kind:'ce-cta-created',data:c});
+    c.steps.forEach(s=>{
+      if(s.sent && s.sentAt) entries.push({t:s.sentAt,kind:'ce-cta-step',data:{step:s,cta:c}});
+      if(s.done && s.doneAt) entries.push({t:s.doneAt,kind:'ce-cta-step',data:{step:s,cta:c}});
+    });
+  });
   const esc0=escState[acctId];
   if(esc0 && esc0.openedAt) entries.push({t:esc0.openedAt,kind:'escalation',data:esc0});
   // Every checklist step completion is its own dated entry, not just an
@@ -1387,6 +2097,21 @@ function riskTimelineEntryHtml(e,a){
     return `<div class="timeline-entry"><div class="timeline-dot" style="background:var(--blue)"></div><div class="timeline-body">
       <div class="mini" style="color:var(--muted2)">${esc(when)}</div>
       <div><b style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="goToEscalationPage('${acctId}')">Escalation step complete: ${esc(step.label)}</b></div>
+    </div></div>`;
+  }
+  if(e.kind==='ce-cta-created'){
+    const c=e.data;
+    return `<div class="timeline-entry"><div class="timeline-dot" style="background:${CTA_CATEGORY_COLOR[c.category]||'var(--line)'}"></div><div class="timeline-body">
+      <div class="mini" style="color:var(--muted2)">${esc(when)}</div>
+      <div><b style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="openEngagementCta('${c.id}')">${esc(CTA_CATEGORY_LABELS[c.category]||c.category)} CTA opened</b></div>
+    </div></div>`;
+  }
+  if(e.kind==='ce-cta-step'){
+    const {step,cta}=e.data;
+    const label=step.type==='email'?(step.sent?'Email sent':'Email drafted'):step.label;
+    return `<div class="timeline-entry"><div class="timeline-dot" style="background:${CTA_CATEGORY_COLOR[cta.category]||'var(--line)'}"></div><div class="timeline-body">
+      <div class="mini" style="color:var(--muted2)">${esc(when)}</div>
+      <div><b style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="openEngagementCta('${cta.id}')">${esc(CTA_CATEGORY_LABELS[cta.category]||cta.category)}: ${esc(label)}</b></div>
     </div></div>`;
   }
   if(e.kind==='trigger-resolved'){
@@ -1498,7 +2223,7 @@ function newLogo(a){ const ds=daysSince(a.firstPurchase); return ds!=null && ds<
 // finding: they need a reason code, a product tag, a standardized set of
 // actionable next steps, and days-open/staleness tracking so leadership can see
 // the portfolio rollup rather than reading every account one by one.
-function autoSeverity(a){ if(a.health<40||a.highCases>=3) return 'Critical'; if(a.health<55||a.highCases>=1) return 'High'; if(a.health<70) return 'Medium'; return 'Low'; }
+function autoSeverity(a){ if((a.health!=null&&a.health<40)||a.highCases>=3) return 'Critical'; if((a.health!=null&&a.health<55)||a.highCases>=1) return 'High'; if(a.health!=null&&a.health<70) return 'Medium'; return 'Low'; }
 const ESC_REASONS=['Technical','Support Experience','Feature Request','Other'];
 const ESC_PRODUCTS=['SAAS','Cart','Training','INTERVIEW','FLEX 2','X26','COMMANDER','BODYCAM3','FLEET','AIR','Other'];
 const ESC_STEPS_TEMPLATE=[
@@ -1628,13 +2353,33 @@ const CTA_CATEGORY_LABELS={renewal:'Renewal',usage:'Usage & Adoption',case_watch
 // email gets sent (see emailRecordDraft) - reuses the same "things that can't
 // be solved by just an email must be escalation-coded" principle already
 // applied to the A&R kanban's recommended-action mapping.
-const CTA_CATEGORY_BY_TRIGGER={
-  case_blocked:'escalation', case_aging:'escalation', nps_csat_drop:'escalation', escalation_opened:'escalation',
-  usage_drop:'usage', onboarding_stall:'usage',
+const CTA_CATEGORY_BY_TRIGGER_BASE={
+  case_blocked:'escalation', case_aging:'escalation', nps_csat_drop:'escalation', escalation_opened:'escalation', negative_sentiment:'escalation',
+  case_volume_spike:'escalation', no_exec_sponsor:'escalation', nps_trend_decline:'escalation',
+  usage_drop:'usage', onboarding_stall:'usage', onboarding_no_plan:'usage',
   renewal_prep_stale:'renewal', renewal_stage_behind:'renewal', growth_mix_stalled:'renewal',
   tap_refresh_due:'case_watch',
-  cadence_gap:'cadence',
+  cadence_gap:'cadence', qbr_overdue:'cadence',
 };
+// Same live-Proxy pattern as RISK_TRIGGER_LABELS above - every existing
+// CTA_CATEGORY_BY_TRIGGER[key] call site (routing, TRIGGER_SOURCES table,
+// Active CTAs filters, etc.) automatically respects a category override or a
+// custom trigger's declared category, with zero call-site changes.
+const CTA_CATEGORY_BY_TRIGGER=new Proxy(CTA_CATEGORY_BY_TRIGGER_BASE,{
+  get(target,key){
+    if(typeof key!=='string') return target[key];
+    if(triggerCategoryOverrides[key]!=null) return triggerCategoryOverrides[key];
+    if(key in target) return target[key];
+    const c=customTriggerDef(key); return c?c.category:undefined;
+  },
+  has(target,key){ return key in target || !!customTriggerDef(key); },
+  ownKeys(target){ return [...new Set([...Reflect.ownKeys(target), ...customTriggers.map(c=>c.key)])]; },
+  getOwnPropertyDescriptor(target,key){
+    if(key in target) return Reflect.getOwnPropertyDescriptor(target,key);
+    if(customTriggerDef(key)) return {enumerable:true,configurable:true,value:this.get(target,key)};
+    return undefined;
+  }
+});
 // Non-escalation CTAs get a simpler flow than escalation's 6-step checklist,
 // all steps existing from the moment the CTA is created (same reasoning as
 // escalation's freshEscSteps - every step is a real, clickable record from
@@ -1850,8 +2595,15 @@ function sendEngagementCtaDraft(ctaId){
   step.sent=true; step.sentAt=new Date().toISOString();
   c.status=engagementCtaEffectiveStatus(c);
   saveEngagementCtas();
+  // Non-escalation CTAs get a per-CTA reference tag baked into the wire
+  // subject (not the subject shown anywhere in the UI/history) - the
+  // fabricated TAP "N months out" text is identical every time this demo
+  // runs on a given account, so without a unique tag a reply after a rerun
+  // could match a stale, already-superseded CTA's reply-watch too.
+  const wireSubject = c.category!=='escalation' ? step.subject+ctaReplyRefTag(ctaId) : step.subject;
+  sendTest10DemoEmail(c.accountId,wireSubject,step.body);
   const a=STATE.accounts.find(x=>x.id===c.accountId);
-  emailDrafts.unshift({id:cid(),t:new Date().toISOString(),action:'sent',templateId:'engagement_'+c.category,templateName:'Client Engagement — '+(CTA_CATEGORY_LABELS[c.category]||c.category),audience:'customer',acctId:c.accountId,acctName:a?a.name:'',subject:step.subject,to:step.recipient,cc:step.cc||'',snippet:emailSnippet(step.body)});
+  emailDrafts.unshift({id:cid(),t:new Date().toISOString(),action:'sent',templateId:'engagement_'+c.category,templateName:'Client Engagement — '+(CTA_CATEGORY_LABELS[c.category]||c.category),audience:'customer',acctId:c.accountId,acctName:a?a.name:'',subject:step.subject,to:step.recipient,cc:step.cc||'',snippet:emailSnippet(step.body),ctaId:c.id,stage:step.label||'Email'});
   emailDrafts=emailDrafts.slice(0,40); saveEmailDrafts();
   if(a){
     pushActivityEntry(c.accountId,'Email',step.subject||'(sent)','Sent via Client Engagement ('+(CTA_CATEGORY_LABELS[c.category]||c.category)+').');
@@ -1866,7 +2618,68 @@ function sendEngagementCtaDraft(ctaId){
     const t=[...triggerEvents].reverse().find(x=>x.accountId===c.accountId && x.triggerType===c.originatingTriggerType && isTriggerLive(x));
     if(t){ t.status='pending'; t.actionNote={label:RISK_ACTION_LABELS[t.recommendedAction]||'Email sent',at:new Date().toISOString(),note:`Email sent to ${step.recipient||'recipient'} — "${step.subject||''}"`}; saveTriggerEvents(); }
   }
+  if(c.category!=='escalation') registerReplyWatch(ctaId);
   toast('Sent — see Sent history.');
+  route();
+}
+// Short, unique-per-CTA suffix appended to the actual sent subject (never
+// shown in the UI) - Gmail preserves the whole subject verbatim behind "Re:",
+// so the backend poller can match on this tag alone instead of the full
+// subject text, which stays identical across repeated demo runs on the same
+// account.
+function ctaReplyRefTag(ctaId){ return ' [ref:'+ctaId.slice(-6)+']'; }
+// Test10 only - registers "this CTA is waiting on a reply" with the backend
+// (backend/data/reply_watch/), then polls. A background poller on the
+// backend (or, without an API key configured, a live Claude Code session)
+// reads the actual Gmail reply and decides whether the CTA is resolved.
+function registerReplyWatch(ctaId){
+  const c=engagementCtas.find(x=>x.id===ctaId); if(!c) return;
+  const a=STATE.accounts.find(x=>x.id===c.accountId); if(!a||!isTest10Account(c.accountId)) return;
+  const sentSubject=(c.steps[0].subject||'')+ctaReplyRefTag(ctaId);
+  fetch('/api/reply-watch/'+ctaId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountName:a.name,ctaId,sentSubject,sentAt:c.steps[0].sentAt||new Date().toISOString()})})
+    .then(r=>r.json()).then(()=>pollReplyWatch(ctaId,0)).catch(()=>{});
+}
+function pollReplyWatch(ctaId,attempt){
+  if(attempt>240) return; // ~20 minutes at 5s intervals, then give up quietly
+  fetch('/api/reply-watch/'+ctaId).then(r=>r.json()).then(d=>{
+    if(d.status==='ready'){ applyReplyToCta(ctaId,d.note||'',d.replySnippet||''); return; }
+    // "reading" = the backend found a matching reply and is actively
+    // interpreting it (real, sometimes multi-second Claude call) - reflect
+    // that on the CTA itself (transient, in-memory only) so the chevron can
+    // show a real interim amber state instead of jumping straight to green.
+    const c=engagementCtas.find(x=>x.id===ctaId);
+    if(c){
+      const wasReading=!!c.replyReading;
+      c.replyReading = d.status==='reading';
+      if(c.replyReading!==wasReading) route();
+    }
+    setTimeout(()=>pollReplyWatch(ctaId,attempt+1),5000);
+  }).catch(()=>setTimeout(()=>pollReplyWatch(ctaId,attempt+1),5000));
+}
+// The actual "auto-complete the chevron chain" - marks every remaining step
+// on the CTA done/sent, logs the reply itself into the same contact-log
+// pipeline every other send/receive goes through (so it shows up in the
+// matrix with a Stage/Status), and resolves the originating trigger so the
+// account shifts back left on the kanban (prompting its own confirm-shift).
+function applyReplyToCta(ctaId,note,replySnippet){
+  const c=engagementCtas.find(x=>x.id===ctaId); if(!c) return;
+  c.replyReading=false;
+  const now=new Date().toISOString();
+  c.steps.forEach((s,i)=>{
+    if(i===0) return; // step 0 (the email) is already sent by this point
+    if(s.type==='email'){ if(!s.sent){ s.sent=true; s.sentAt=now; s.detail={override:true,note:note||'Auto-completed from customer reply'}; } }
+    else if(!s.done){ s.done=true; s.doneAt=now; s.detail={override:true,note:note||'Auto-completed from customer reply'}; }
+  });
+  c.status=engagementCtaEffectiveStatus(c);
+  saveEngagementCtas();
+  const a=STATE.accounts.find(x=>x.id===c.accountId);
+  emailDrafts.unshift({id:cid(),t:now,direction:'received',action:'received',templateId:'reply_'+c.category,templateName:'Reply — '+(CTA_CATEGORY_LABELS[c.category]||c.category),audience:'customer',acctId:c.accountId,acctName:a?a.name:'',subject:'Re: '+(c.steps[0].subject||''),to:'',from:c.steps[0].recipient||TEST10_DEMO_INBOX,snippet:emailSnippet(replySnippet||note||''),ctaId:c.id,stage:'Reply received'});
+  emailDrafts=emailDrafts.slice(0,40); saveEmailDrafts();
+  if(c.originatingTriggerType){
+    const t=[...triggerEvents].reverse().find(x=>x.accountId===c.accountId && x.triggerType===c.originatingTriggerType && isTriggerLive(x));
+    if(t){ t.status='resolved'; t.resolution={outcome:'resolved',note:note||'Auto-completed from customer reply',at:now}; saveTriggerEvents(); if(HEALTH_REVEALING_TRIGGERS.has(t.triggerType)) revealTest10Health(c.accountId); }
+  }
+  toast('Reply read — CTA auto-completed.');
   route();
 }
 
@@ -1879,14 +2692,18 @@ function accountsUnder(nodeId){
   return out;
 }
 function rollup(accts){
-  const r={arr:0,risk:0,cases:0,high:0,n:accts.length,renewals:0,red:0,amber:0,green:0,wsum:0,ltv:0,
+  const r={arr:0,risk:0,cases:0,high:0,n:accts.length,renewals:0,red:0,amber:0,green:0,wsum:0,healthArr:0,healthSum:0,healthN:0,ltv:0,
     growth:{Renewal:0,Expansion:0,Transactional:0}, inCadence:0, blocked:0, aging:0};
-  accts.forEach(a=>{ r.arr+=a.renewalAmount; r.risk+=a.riskARR; r.cases+=a.openCases; r.high+=a.highCases; r.renewals+=a.opps.length; r.ltv+=a.ltv||0;
-    r.wsum+=a.health*a.renewalAmount; if(a.tier==='atrisk')r.red++; else if(a.tier==='watch')r.amber++; else r.green++;
+  accts.forEach(a=>{ r.arr+=a.renewalAmount; r.risk+=(a.riskARR||0); r.cases+=a.openCases; r.high+=a.highCases; r.renewals+=a.opps.length; r.ltv+=a.ltv||0;
+    // Blanked Test10 accounts (health===null, not yet revealed) simply don't
+    // contribute to the health average yet - same pattern npsRollup already
+    // uses for a.nps - rather than corrupting the whole rollup with NaN.
+    if(a.health!=null){ r.wsum+=a.health*a.renewalAmount; r.healthArr+=a.renewalAmount; r.healthSum+=a.health; r.healthN++; }
+    if(a.tier==='atrisk')r.red++; else if(a.tier==='watch')r.amber++; else if(a.tier==='healthy')r.green++;
     const g=a.growth||{}; r.growth.Renewal+=g.Renewal||0; r.growth.Expansion+=g.Expansion||0; r.growth.Transactional+=g.Transactional||0;
     if(cadenceInfo(a).tier==='green') r.inCadence++;
     r.blocked+=a.casesBlocked||0; r.aging+=a.casesAging||0; });
-  r.health = r.arr>0? Math.round(r.wsum/r.arr) : Math.round(accts.reduce((s,a)=>s+a.health,0)/(accts.length||1));
+  r.health = r.healthArr>0 ? Math.round(r.wsum/r.healthArr) : (r.healthN ? Math.round(r.healthSum/r.healthN) : null);
   const cv=accts.map(a=>csatVal(a).v).filter(v=>v!=null); r.csat = cv.length?Math.round(cv.reduce((s,v)=>s+v,0)/cv.length):null;
   r.engagementPct = r.n? Math.round(r.inCadence/r.n*100) : 0;
   r.growthTotal = r.growth.Renewal+r.growth.Expansion+r.growth.Transactional;
@@ -1900,8 +2717,8 @@ function crumbPath(nodeId){
 }
 
 // ---------- shared cells ----------
-const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',riskboard:'Accounts & Risk',scorecard:'CSM',usage:'Usage & Adoption',engagement:'Client Engagement',escalations:'Escalations',activectas:'Active CTAs',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Configure Data',resources:'Resource Library',execreport:'Executive Report',
-  gong:'Customer Contact Insights',acctoutcomes:'Account Outcomes',prodoutcomes:'Product Outcomes',
+const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-down',riskboard:'Accounts & Risk',scorecard:'CSM',usage:'Usage & Adoption',engagement:'Client Engagement',escalations:'Escalations',activectas:'Active CTAs',plans:'Success Plans',emails:'Email Outreach',worklist:'My Worklist',model:'Configure Org Data',resources:'Resource Library',execreport:'Executive Report',
+  gong:'Customer Contact Insights',predictive:'Predictive Insights',csemails:'Customer Success Emails',acctoutcomes:'Account Outcomes',
   npsmanaged:'Managed Account NPS & CSAT',npsagency:'Agency NPS & CSAT',csat:'NPS & CSAT Management',insights:'Customer Insights',
   acctscorecard:'Account',prodscorecard:'Product',integrations:'Integrations & Data Sources'};
 
@@ -1913,12 +2730,12 @@ const TAB_LABELS={home:'Home',overview:'Command Center',hierarchy:'Org Drill-dow
 // after each pick.
 const NAV_CATEGORIES=[
   {id:'home',label:'Home',icon:'<path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-5H10v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/>',tabs:['home']},
-  {id:'cockpit',label:'My Book',icon:'<path d="M12 6C10 4.3 6.8 3.8 3.5 4.3v13.8c3.3-.5 6.5 0 8.5 1.7 2-1.7 5.2-2.2 8.5-1.7V4.3C17.2 3.8 14 4.3 12 6Z"/><path d="M12 6v13.8"/>',tabs:['overview','worklist','hierarchy']},
+  {id:'cockpit',label:'My Book',icon:'<path d="M12 6C10 4.3 6.8 3.8 3.5 4.3v13.8c3.3-.5 6.5 0 8.5 1.7 2-1.7 5.2-2.2 8.5-1.7V4.3C17.2 3.8 14 4.3 12 6Z"/><path d="M12 6v13.8"/>',tabs:['overview','worklist']},
   {id:'performance',label:'Performance',icon:'<path d="M4 20h16M7 20V10m5 10V4m5 16v-7"/>',tabs:['acctscorecard','scorecard','prodscorecard','execreport','model']},
   {id:'pulse',label:'Customer Pulse',icon:'<path d="M3 12h4l2-7 4 14 2-7h6"/>',tabs:['npsagency','npsmanaged','csat','insights','usage']},
   {id:'risk',label:'Accounts & Risk',icon:'<path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3Z"/><path d="M12 8v5M12 16h.01"/>',tabs:['riskboard']},
   {id:'engagement',label:'Engagement',icon:'<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',tabs:['engagement','escalations','activectas','emails','gong']},
-  {id:'journey',label:'Customer Success Journey',icon:'<path d="M6 3v18"/><path d="M6 5h12l-3 4 3 4H6"/>',tabs:['plans','acctoutcomes','prodoutcomes']},
+  {id:'journey',label:'Customer Success Journey',icon:'<path d="M6 3v18"/><path d="M6 5h12l-3 4 3 4H6"/>',tabs:['predictive','plans','csemails','acctoutcomes']},
   {id:'resources',label:'Resources',icon:'<path d="M4 5a2 2 0 0 1 2-2h6v18H6a2 2 0 0 1-2-2Z"/><path d="M20 5a2 2 0 0 0-2-2h-6v18h6a2 2 0 0 0 2-2Z"/>',tabs:['resources','integrations']},
 ];
 function categoryForTab(tab){ return NAV_CATEGORIES.find(c=>c.tabs.includes(tab)) || NAV_CATEGORIES[0]; }
@@ -1926,7 +2743,11 @@ let navOpenCat = categoryForTab(STATE.tab).id;
 function renderNav(){
   const rail=$('#iconRail'), fly=$('#flyout'); if(!rail) return;
   const activeCat=navOpenCat||categoryForTab(STATE.tab).id;
-  rail.innerHTML=NAV_CATEGORIES.map(c=>`<button class="rail-btn${activeCat===c.id?' active':''}" data-cat="${c.id}" title="${esc(c.label)}"><svg class="ic" viewBox="0 0 24 24">${c.icon}</svg></button>`).join('');
+  // unackStageChange already tracks exactly the "unconfirmed stage shift"
+  // set the kanban's own flash badges use - one shared count, not a second
+  // parallel notion of "unconfirmed."
+  const unconfirmed=Object.keys(unackStageChange).length;
+  rail.innerHTML=NAV_CATEGORIES.map(c=>`<button class="rail-btn${activeCat===c.id?' active':''}" data-cat="${c.id}" title="${esc(c.label)}"><svg class="ic" viewBox="0 0 24 24">${c.icon}</svg>${c.id==='risk'&&unconfirmed?`<span class="rail-badge">${unconfirmed>99?'99+':unconfirmed}</span>`:''}</button>`).join('');
   rail.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>onRailClick(b.dataset.cat)));
   renderFlyout();
 }
@@ -1981,20 +2802,30 @@ function scaffoldView(title,hint,bullets){
 // not a place to read full email text; that's more important later once
 // this becomes the extraction point for pulling structured info out of
 // actual email content, not just logging that contact happened.
+// Resolves a stored ctaId to a live open/closed label - status is read fresh
+// every time this runs (not frozen at send time), so a CTA that later closes
+// out (e.g. auto-completed from a read reply) shows as Closed retroactively
+// on every past entry tied to it, not just going forward.
+function ctaStatusLabel(ctaId){
+  if(!ctaId) return '';
+  const c=engagementCtas.find(x=>x.id===ctaId); if(!c) return '';
+  return engagementCtaEffectiveStatus(c)==='done'?'Closed':'Open';
+}
 function contactLogEntries(accts){
   const idSet=new Set(accts.map(a=>a.id));
   const byId={}; accts.forEach(a=>byId[a.id]=a);
   const rows=[];
   emailDrafts.forEach(h=>{
     if(h.acctId && !idSet.has(h.acctId)) return;
-    rows.push({t:h.t,acctId:h.acctId,acctName:h.acctName,direction:'sent',audience:h.audience,subject:h.subject,snippet:h.snippet||'',contact:h.to||''});
+    rows.push({t:h.t,acctId:h.acctId,acctName:h.acctName,direction:h.direction||'sent',audience:h.audience,subject:h.subject,snippet:h.snippet||'',contact:h.direction==='received'?h.from||'':h.to||'',stage:h.stage||h.templateName||'',status:ctaStatusLabel(h.ctaId)});
   });
   Object.keys(escState).forEach(acctId=>{
     if(!idSet.has(acctId)) return;
     const st=escState[acctId]; if(!st||!st.steps) return;
+    const escCta=engagementCtas.find(c=>c.accountId===acctId && c.category==='escalation');
     st.steps.forEach((s,idx)=>{
       if(ESC_STEP_ACTIONS[idx]==='receive' && s.done && s.detail && s.detail.body){
-        rows.push({t:s.detail.at||s.doneAt,acctId,acctName:(byId[acctId]||{}).name||'',direction:'received',audience:'customer',subject:s.label,snippet:emailSnippet(s.detail.body),contact:s.detail.from||''});
+        rows.push({t:s.detail.at||s.doneAt,acctId,acctName:(byId[acctId]||{}).name||'',direction:'received',audience:'customer',subject:s.label,snippet:emailSnippet(s.detail.body),contact:s.detail.from||'',stage:s.label,status:escCta?ctaStatusLabel(escCta.id):''});
       }
     });
   });
@@ -2016,15 +2847,119 @@ function viewGong(accts){
     </div>
   </div>
   <div class="card" id="contactMatrixCard"><h3>Contact matrix</h3>
-    ${rows.length?`<div style="overflow-x:auto"><table class="matrix-table"><thead><tr><th>Timestamp</th><th>Account</th><th>Direction</th><th>Audience</th><th>Subject</th><th>Snippet</th><th>Contact</th></tr></thead><tbody>
-    ${rows.slice(0,200).map(r=>`<tr ${r.acctId?`onclick="openAcct('${r.acctId}')" style="cursor:pointer"`:''}><td class="mini">${r.t?esc(new Date(r.t).toLocaleString()):'—'}</td><td><b>${esc(r.acctName||'—')}</b></td><td><span class="pill ${r.direction==='sent'?'p-blue':'p-green'}">${r.direction==='sent'?'Sent':'Received'}</span></td><td><span class="pill ${r.audience==='customer'?'p-blue':'p-amber'}">${esc(r.audience||'—')}</span></td><td class="mini">${esc(r.subject||'—')}</td><td class="mini" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.snippet||'')}">${esc(r.snippet||'—')}</td><td class="mini">${esc(r.contact||'—')}</td></tr>`).join('')}
+    ${rows.length?`<div style="overflow-x:auto"><table class="matrix-table"><thead><tr><th>Timestamp</th><th>Account</th><th>Direction</th><th>Audience</th><th>Subject</th><th>Snippet</th><th>Contact</th><th>Stage</th><th>Status</th></tr></thead><tbody>
+    ${rows.slice(0,200).map(r=>`<tr ${r.acctId?`onclick="openAcct('${r.acctId}')" style="cursor:pointer"`:''}><td class="mini">${r.t?esc(new Date(r.t).toLocaleString()):'—'}</td><td><b>${esc(r.acctName||'—')}</b></td><td><span class="pill ${r.direction==='sent'?'p-blue':'p-green'}">${r.direction==='sent'?'Sent':'Received'}</span></td><td><span class="pill ${r.audience==='customer'?'p-blue':'p-amber'}">${esc(r.audience||'—')}</span></td><td class="mini">${esc(r.subject||'—')}</td><td class="mini" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.snippet||'')}">${esc(r.snippet||'—')}</td><td class="mini">${esc(r.contact||'—')}</td><td class="mini">${esc(r.stage||'—')}</td><td>${r.status?`<span class="pill ${r.status==='Open'?'p-amber':'p-green'}">${esc(r.status)}</span>`:'<span class="mini">—</span>'}</td></tr>`).join('')}
     </tbody></table></div>`:'<p class="mini">No emails sent or received yet.</p>'}
   </div>`;
 }
-function viewAcctOutcomes(){ return scaffoldView('Account Outcomes','goal and outcome tracking at the account level',[
-  'Account-level goals distinct from product-level goals','Progress toward outcomes, not just milestone completion','Feeds the Account Scorecard under Performance']); }
-function viewProdOutcomes(){ return scaffoldView('Product Outcomes','goal and outcome tracking at the product level',[
-  'Per-product goals and health, independent of overall account health','An account can be green overall while one product line (e.g. Fusus) is red','Feeds the Product Scorecard under Performance']); }
+// Account Outcomes: measures whether a completed Success Plan actually
+// worked - the same branching funnel visual as the CSAT send/receive funnel
+// (funnelForkHtml), just forked on NPS instead of survey receipt. Clicking a
+// branch does three things at once: filters the account list below to that
+// group, votes on last quarter's plan (up/down), and drafts next quarter's
+// predictive insight for every account in the group - for a disapproved
+// account that draft leads with a diagnosis of the likely cause (reusing the
+// same real fields the risk engine already tracks) instead of just repeating
+// the same cadence blind.
+let acctOutcomeFilter=null; // null | 'approved' | 'disapproved'
+function outcomeFunnelHtml(allV,allSub,pendV,pendSub,doneV,doneSub,apprV,apprSub,disV,disSub){
+  return `<div class="funnel">
+    <div class="funnel-box"><div class="l">All accounts</div><div class="v">${allV}</div><div class="d">${esc(allSub)}</div></div>
+    <div class="funnel-conn"><span class="funnel-flow"></span></div>
+    <div class="funnel-box clickable" onclick="scrollToSection('outcomePending')"><div class="l">Pending completed</div><div class="v">${pendV}</div><div class="d">${esc(pendSub)}</div></div>
+    <div class="funnel-conn"><span class="funnel-flow"></span></div>
+    <div class="funnel-box risk-amber"><div class="l">Plans completed</div><div class="v">${doneV}</div><div class="d">${esc(doneSub)}</div></div>
+    <div class="funnel-fork">
+      <svg viewBox="0 0 60 80" preserveAspectRatio="none">
+        <defs><marker id="outcomeForkArrow" markerWidth="3" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0 L3,2 L0,4 Z" class="fork-arrowhead"/></marker></defs>
+        <path class="fork-path" d="M0,40 Q30,40 54,14" marker-end="url(#outcomeForkArrow)"/>
+        <path class="fork-path" d="M0,40 Q30,40 54,66" marker-end="url(#outcomeForkArrow)"/>
+        <circle class="fork-dot" r="3.2"><animateMotion dur="1.8s" repeatCount="indefinite" path="M0,40 Q30,40 54,14"/></circle>
+        <circle class="fork-dot" r="3.2"><animateMotion dur="1.8s" begin="0.9s" repeatCount="indefinite" path="M0,40 Q30,40 54,66"/></circle>
+      </svg>
+    </div>
+    <div class="funnel-fork-boxes">
+      <div class="funnel-box small risk-green clickable" onclick="clickOutcomeBranch('approved')"><div class="l">NPS approved</div><div class="v">${apprV}</div><div class="d">${esc(apprSub)}</div></div>
+      <div class="funnel-box small risk-red clickable" onclick="clickOutcomeBranch('disapproved')"><div class="l">NPS disapproved</div><div class="v">${disV}</div><div class="d">${esc(disSub)}</div></div>
+    </div>
+  </div>`;
+}
+function clickOutcomeBranch(verdict){
+  const qKey=quarterKeyOf(globalQSel||defaultQSel());
+  const nextQ=shiftQuarter(qKey,1);
+  const list=STATE.accounts.filter(a=>{
+    const p=plans[a.id]; if(!p||planProgress(p)!==100||a.nps==null) return false;
+    return verdict==='approved' ? a.nps>=9 : a.nps<9;
+  });
+  let acted=0;
+  list.forEach(a=>{
+    const p=plans[a.id];
+    if(p.lastOutcome && p.lastOutcome.quarter===qKey) return; // already voted this cycle - clicking again just re-filters
+    p.lastOutcome={quarter:qKey,verdict,nps:a.nps,at:new Date().toISOString()};
+    generatePredictiveInsight(a.id,nextQ);
+    const ins=predictiveInsightFor(a.id,nextQ);
+    if(ins){
+      if(verdict==='disapproved'){
+        const cause=[];
+        if(a.hasExecSponsor===false) cause.push('no executive sponsor on file');
+        if(a.qbrDaysOverdue) cause.push('an overdue QBR');
+        if(a.sentTier==='neg') cause.push('strained support sentiment');
+        if(a.casesAging) cause.push(`${a.casesAging} aging case(s)`);
+        ins.analysis=`Last quarter's plan (${qKey}) was marked not approved — NPS came back ${a.nps}/10. ${cause.length?`Likely driver(s): ${cause.join(', ')}.`:'No specific driver stood out from current account data — a direct conversation is needed to find out why.'} ${ins.analysis}`;
+        ins.timeline.unshift({when:'Now',action:"Address last quarter's shortfall",detail:cause.length?`Focus next quarter's plan on: ${cause.join(', ')}.`:"Have a direct conversation to identify what drove the low NPS before repeating last quarter's cadence.",emailTemplate:null});
+      } else {
+        ins.analysis=`Last quarter's plan (${qKey}) was approved — NPS came back ${a.nps}/10. Repeating a similar cadence next quarter. ${ins.analysis}`;
+      }
+    }
+    acted++;
+  });
+  savePlans();
+  if(acted) savePredictiveInsights();
+  acctOutcomeFilter=verdict;
+  route();
+  scrollToSection(verdict==='approved'?'outcomeApproved':'outcomeDisapproved');
+  toast(acted?`${verdict==='approved'?'Upvoted':'Downvoted'} ${acted} account plan${acted===1?'':'s'} — next quarter's insight drafted for each.`:'Already voted for this cycle — showing the group.');
+}
+function clearOutcomeFilter(){ acctOutcomeFilter=null; route(); }
+function viewNextQuarterInsight(acctId){
+  const nextQ=shiftQuarter(currentQuarter(),1);
+  const [y,q]=nextQ.split('-Q');
+  globalQSel={year:+y,q:+q};
+  openPredictiveInsight(acctId);
+}
+function acctOutcomeRowsHtml(list,verdict,qKey){
+  if(!list.length) return '<p class="mini">No accounts in this group.</p>';
+  return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">NPS</th><th>Last outcome vote</th><th></th></tr></thead><tbody>
+  ${list.map(a=>{
+    const p=plans[a.id]; const voted=p.lastOutcome && p.lastOutcome.quarter===qKey;
+    return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b></td><td>${ownerCell(a.ownerName)}</td><td class="num"><span class="pill ${npsTierPill(a.nps)}">${a.nps}/10</span></td><td>${voted?`<span class="pill ${verdict==='approved'?'p-green':'p-red'}">${verdict==='approved'?'Upvoted':'Downvoted'} ${esc(qKey)}</span>`:'<span class="pill p-gray">Not yet voted</span>'}</td><td><button class="btn sm" onclick="viewNextQuarterInsight('${a.id}')">View next quarter</button></td></tr>`;
+  }).join('')}
+  </tbody></table>`;
+}
+function acctOutcomePendingRowsHtml(list){
+  if(!list.length) return '<p class="mini">No plans currently in progress.</p>';
+  return `<table><thead><tr><th>Account</th><th>Owner</th><th>Progress</th><th></th></tr></thead><tbody>
+  ${list.map(a=>{ const p=plans[a.id]; const prog=planProgress(p); return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b></td><td>${ownerCell(a.ownerName)}</td><td><div class="progress" style="width:100px"><i style="width:${prog}%"></i></div><span class="mini">${prog}%</span></td><td><button class="btn sm" onclick="openPlan('${a.id}')">Open plan</button></td></tr>`; }).join('')}
+  </tbody></table>`;
+}
+function viewAcctOutcomes(accts){
+  const sel=globalQSel||defaultQSel();
+  const qKey=quarterKeyOf(sel);
+  const pending=accts.filter(a=>{ const p=plans[a.id]; return p&&planProgress(p)<100; });
+  const completed=accts.filter(a=>{ const p=plans[a.id]; return p&&planProgress(p)===100; });
+  const approved=completed.filter(a=>a.nps!=null&&a.nps>=9);
+  const disapproved=completed.filter(a=>a.nps!=null&&a.nps<9);
+  let html=`<div class="card"><h3>Account Outcomes <span class="hint">measuring whether completed Success Plans actually moved NPS</span></h3>
+    <p class="mini" style="margin-bottom:12px">Every account whose Success Plan is fully complete gets checked against its NPS score. Click a branch to vote on last quarter's plan and draft next quarter's — an approved branch repeats a similar cadence, a disapproved branch leads with the likely cause.</p>
+    ${quarterToggleHtml(sel,'setGlobalQYear','setGlobalQQ')}
+    ${outcomeFunnelHtml(accts.length,'in scope',pending.length,'plan in progress',completed.length,qKey+' cycle',approved.length,'NPS 9-10',disapproved.length,'NPS below 9')}
+  </div>`;
+  if(acctOutcomeFilter) html+=`<p class="mini" style="margin:0 4px 10px">Showing <b>${acctOutcomeFilter==='approved'?'NPS approved':'NPS disapproved'}</b> · <a href="#" onclick="clearOutcomeFilter();return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear</a></p>`;
+  html+=`<div class="card" id="outcomePending"><h3>Pending completed <span class="hint">${pending.length} account${pending.length===1?'':'s'} with a plan in progress</span></h3>${acctOutcomePendingRowsHtml(pending)}</div>`;
+  html+=`<div class="card" id="outcomeApproved"><h3>NPS approved <span class="hint">${approved.length} account${approved.length===1?'':'s'}</span></h3>${acctOutcomeRowsHtml(approved,'approved',qKey)}</div>`;
+  html+=`<div class="card" id="outcomeDisapproved"><h3>NPS disapproved <span class="hint">${disapproved.length} account${disapproved.length===1?'':'s'}</span></h3>${acctOutcomeRowsHtml(disapproved,'disapproved',qKey)}</div>`;
+  return html;
+}
 // ---- NPS (Managed-Account & Agency) ----
 // Two independent populations per Rui's requirement: Managed-Account NPS is the
 // real per-account NPS already modeled on STATE.accounts; Agency NPS simulates
@@ -2138,6 +3073,21 @@ function destroyChartKey(key){ if(charts[key]){ try{charts[key].destroy()}catch(
 // clear which is real. Manual refresh only (no auto-poll), per instruction.
 const TEST10_ACCOUNTS=['Springfield Fire & Rescue','Union City Correctional Facility','Zionsville Highway Patrol','Kingsley Fire & Rescue','Westgate Correctional Facility','Harborview Fire & Rescue','Georgetown Public Safety Dept.',"Jasper County Sheriff's Office",'Thornbury Highway Patrol','Lakewood Correctional Facility'];
 function isTest10Account(acctId){ const a=STATE.accounts.find(x=>x.id===acctId); return !!a && TEST10_ACCOUNTS.includes(a.name); }
+// Test10 accounts are a live demo sandbox with a real Gmail send behind
+// "Send" - every draft for one of these 10 accounts is redirected to the one
+// real inbox available for the demo, regardless of what the template would
+// otherwise have filled in for a customer contact.
+const TEST10_DEMO_INBOX='axongainsightrp@gmail.com';
+// Fires the actual send through /api/automation/send (backend/gmail_client.py) -
+// fire-and-forget from the UI's perspective, since the step/CTA is already
+// marked sent locally regardless; a failure here just means the real demo
+// email didn't land, not that local state reverts.
+function sendTest10DemoEmail(acctId,subject,body){
+  if(!isTest10Account(acctId)) return;
+  fetch('/api/automation/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:TEST10_DEMO_INBOX,subject:subject||'(no subject)',bodyHtml:(body||'').replace(/\n/g,'<br>')})})
+    .then(r=>r.json()).then(d=>{ if(!d.sent) toast('Demo email failed to send — check Gmail auth.'); })
+    .catch(()=>toast('Demo email failed to send — check Gmail auth.'));
+}
 // ---------- AI draft (human-in-the-loop, no LLM API key required) ----------
 // "Create AI draft" writes a small hand-off file on the backend
 // (backend/data/ai_drafts/<requestId>.json) with just the context needed -
@@ -2235,6 +3185,16 @@ async function refreshSheetData(){
     if(data.configured===false){ sheetFetchError='Google Sheets isn’t configured on the backend yet (missing service account key).'; sheetDataCache=[]; }
     else{ sheetDataCache=data.records||[]; }
     sheetLastFetch=new Date();
+    syncTest10SurveyIntoAccounts();
+    // A freshly-synced NPS score should be able to fire nps_csat_drop the
+    // moment it lands, same as any other real change would - without this,
+    // a submitted survey response only revealed the number but the risk
+    // stage itself wouldn't actually shift until the next full reload (the
+    // only other place evaluateRiskTriggers() runs is inside computeAll()).
+    // Deliberately NOT a full computeAll() here - that would also re-run
+    // resetTest10RiskBaseline() and wipe every other CTA/escalation/plan
+    // already built up this session for the Test10 accounts.
+    evaluateRiskTriggers();
   }catch(e){ sheetFetchError='Could not reach the backend: '+(e.message||e); }
   route();
 }
@@ -2447,6 +3407,26 @@ function getTest10RawResponses(){
   const names=new Set(TEST10_ACCOUNTS.map(n=>n.toLowerCase()));
   return real.filter(r=>r.account && names.has(r.account.trim().toLowerCase()));
 }
+// The Test10 pilot survey (Google Sheets, refreshed above) previously only
+// fed the dedicated NPS/CSAT Management page's own Test10 view - it never
+// touched the account's real nps/csat fields, so nothing outside that one
+// page ever reflected a submitted response. This is what makes "submit a
+// survey" actually act like a real data refresh everywhere else too
+// (Command Center, Worklist, CSM, Account list).
+function syncTest10SurveyIntoAccounts(){
+  let csatChanged=false;
+  getTest10RawResponses().forEach(r=>{
+    const a=STATE.accounts.find(x=>x.name.trim().toLowerCase()===r.account.trim().toLowerCase());
+    if(!a) return;
+    if(r.score!=null) a.nps=r.score;
+    // Written into the same manual-override map setCsat() uses (not a.csat
+    // directly) - csatVal(a) checks this map first, so a synced response
+    // takes effect wherever CSAT is actually displayed, not just a stale cache.
+    if(r.csatScore!=null){ csat[a.id]=r.csatScore; csatChanged=true; }
+    if(r.score!=null||r.csatScore!=null) revealTest10NpsCsat(a.id);
+  });
+  if(csatChanged) LS.set('csat',csat);
+}
 function getTest10StatusList(){
   const responses=getTest10Data();
   return TEST10_ACCOUNTS.map(name=>{
@@ -2471,9 +3451,9 @@ function getNpsScoped(kind,accts){
 }
 function drawNpsCharts(kind,accts){
   let d;
-  const npsSel=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const npsSel=globalQSel||defaultQSel();
   const npsQKey=quarterKeyOf(npsSel);
-  if(kind==='managed' && npsManagedTest10){
+  if(kind==='managed' && riskTest10){
     const rows=npsQKey===PILOT_QUARTER?test10AsNpsRows():[];
     d={rows,promoters:rows.filter(r=>r.score===10),neutrals:rows.filter(r=>r.score===9),detractors:rows.filter(r=>r.score<9)};
   } else if(kind==='managed'){
@@ -2566,10 +3546,11 @@ function drawNpsCharts(kind,accts){
     if(ordered2.length) charts['npsIntent'+kind]=new Chart(intentEl,{type:'doughnut',data:{labels:ordered2.map(o=>o.k),datasets:[{data:ordered2.map(o=>o.n),backgroundColor:ordered2.map(o=>colors2[o.k]),borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'55%',noScales:true})});
   }
 }
-let npsManagedTest10=false, npsManagedSel=null;
-function setNpsManagedTest10(v){ npsManagedTest10=v; route(); }
-function setNpsManagedYear(y){ const cur=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; npsManagedSel={year:+y,q:cur.q}; route(); }
-function setNpsManagedQ(q){ const cur=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; npsManagedSel={year:cur.year,q:+q}; route(); }
+// Delegates to the single global Test10/quarter toggles (kept as named
+// wrappers so the existing button markup below doesn't need to change).
+function setNpsManagedTest10(v){ setRiskTest10(v); }
+function setNpsManagedYear(y){ setGlobalQYear(y); }
+function setNpsManagedQ(q){ setGlobalQQ(q); }
 function test10AsNpsRows(){
   return getTest10Data().map(r=>{
     const a=STATE.accounts.find(x=>x.name===r.account);
@@ -2580,8 +3561,8 @@ function npsView(kind,accts){
   const label=kind==='managed'?'Managed Account NPS & CSAT':'Agency NPS & CSAT';
   let scope=kind==='managed'?'NPS from accounts actively managed by a CSM':'Broader agency-wide NPS across divisions/respondents — reported separately from managed accounts, not blended together — always shown across the whole agency regardless of "View as"';
   if(kind==='managed' && ownerFilter) scope=`NPS for ${esc(ownerFilter)}'s managed accounts`;
-  const usingTest10=kind==='managed' && npsManagedTest10;
-  const npsSel=npsManagedSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const usingTest10=kind==='managed' && riskTest10;
+  const npsSel=globalQSel||defaultQSel();
   const npsQKey=quarterKeyOf(npsSel);
   let rows;
   if(kind!=='managed'){ rows=getNpsScoped(kind,accts).rows; }
@@ -2617,8 +3598,8 @@ function npsView(kind,accts){
   const csmGrouped={};
   complaints.forEach(r=>{ (csmGrouped[r.owner]=csmGrouped[r.owner]||[]).push(r); });
   const test10Bar=kind==='managed'?`<div class="row-actions" style="margin:-4px 0 14px;flex-wrap:wrap">
-    <button type="button" class="btn sm${npsManagedTest10?' primary':''}" onclick="setNpsManagedTest10(${npsManagedTest10?'false':'true'})">${npsManagedTest10?'← Back to full book':'Pull up Test 10 (live pilot)'}</button>
-    ${npsManagedTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():''}</span>`:''}
+    <button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setNpsManagedTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book':'Pull up Test 10 (live pilot)'}</button>
+    ${riskTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():''}</span>`:''}
   </div>`:'';
   return `${test10Bar}<div class="card"><h3>${esc(label)} <span class="hint">${usingTest10?'Test 10 pilot accounts':scope}</span></h3>
     ${kind==='managed'?quarterToggleHtml(npsSel,'setNpsManagedYear','setNpsManagedQ'):''}
@@ -2663,12 +3644,13 @@ function viewNpsAgency(accts){ return npsView('agency',accts); }
 // are wired to existing surveyState so the shape is real, but the automated
 // quarterly send + Customer-Insights ingestion described alongside this isn't
 // built yet: All Accounts -> Surveys Sent -> Surveys Received per quarter.
-let csatFilterSel=null, csatTest10=false, csatTest10Sel=null;
-function setCsatFilterYear(y){ const cur=csatFilterSel||{year:+MOCK_QUARTER.split('-Q')[0],q:+MOCK_QUARTER.split('-Q')[1]}; csatFilterSel={year:+y,q:cur.q}; route(); }
-function setCsatFilterQ(q){ const cur=csatFilterSel||{year:+MOCK_QUARTER.split('-Q')[0],q:+MOCK_QUARTER.split('-Q')[1]}; csatFilterSel={year:cur.year,q:+q}; route(); }
-function setCsatTest10(v){ csatTest10=v; route(); }
-function setCsatTest10Year(y){ const cur=csatTest10Sel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; csatTest10Sel={year:+y,q:cur.q}; route(); }
-function setCsatTest10Q(q){ const cur=csatTest10Sel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; csatTest10Sel={year:cur.year,q:+q}; route(); }
+// Delegates to the single global Test10/quarter toggles (kept as named
+// wrappers so the existing button markup below doesn't need to change).
+function setCsatFilterYear(y){ setGlobalQYear(y); }
+function setCsatFilterQ(q){ setGlobalQQ(q); }
+function setCsatTest10(v){ setRiskTest10(v); }
+function setCsatTest10Year(y){ setGlobalQYear(y); }
+function setCsatTest10Q(q){ setGlobalQQ(q); }
 // Forked funnel: All -> Sent -> (Received | Not received). The fork is drawn
 // as two SVG bezier paths branching from the Sent box, each with its own
 // animated dot, so the "sent" population visibly splits into exactly the two
@@ -2701,12 +3683,12 @@ function funnelForkHtml(allV,allSub,sentV,sentSub,recV,recSub,notV,notSub,scroll
 }
 function viewCsatTab(accts){
   const test10Bar=`<div class="row-actions" style="margin-bottom:16px;flex-wrap:wrap">
-    <button type="button" class="btn sm${csatTest10?' primary':''}" onclick="setCsatTest10(${csatTest10?'false':'true'})">${csatTest10?'← Back to full book':'Test 10 (live pilot)'}</button>
-    ${csatTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():'Not yet refreshed — showing mock placeholders'}</span>`:''}
+    <button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setCsatTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book':'Test 10 (live pilot)'}</button>
+    ${riskTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():'Not yet refreshed — showing mock placeholders'}</span>`:''}
   </div>`;
 
-  if(csatTest10){
-    const sel=csatTest10Sel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  if(riskTest10){
+    const sel=globalQSel||defaultQSel();
     const qKey=quarterKeyOf(sel);
     const isLive=qKey===PILOT_QUARTER;
     const statusList=isLive?getTest10StatusList():[];
@@ -2728,7 +3710,7 @@ function viewCsatTab(accts){
     </div>`;
   }
 
-  const sel=csatFilterSel||{year:+MOCK_QUARTER.split('-Q')[0],q:+MOCK_QUARTER.split('-Q')[1]};
+  const sel=globalQSel||defaultQSel();
   const quarterKey=quarterKeyOf(sel);
   let sentCount=0, receivedCount=0;
   accts.forEach(a=>{
@@ -2783,7 +3765,7 @@ function getInsightsData(accts,quarterKey){
   return {entries,themes,last30,acctsCovered};
 }
 function drawInsightsChart(accts){
-  const sel=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const sel=globalQSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
   const {themes}=getInsightsData(accts,quarterKeyOf(sel));
   destroyChartKey('insightsTheme');
   const el=$('#insightsThemeChart'); if(!el||!themes.length) return;
@@ -2805,11 +3787,10 @@ function drawInsightsChart(accts){
     }
   });
 }
-let insightsSel=null;
-function setInsightsYear(y){ const cur=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; insightsSel={year:+y,q:cur.q}; route(); }
-function setInsightsQ(q){ const cur=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]}; insightsSel={year:cur.year,q:+q}; route(); }
+function setInsightsYear(y){ setGlobalQYear(y); }
+function setInsightsQ(q){ setGlobalQQ(q); }
 function viewInsightsTab(accts){
-  const sel=insightsSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
+  const sel=globalQSel||{year:+PILOT_QUARTER.split('-Q')[0],q:+PILOT_QUARTER.split('-Q')[1]};
   const qKey=quarterKeyOf(sel);
   const isLive=qKey===PILOT_QUARTER;
   const {entries,themes,last30,acctsCovered}=getInsightsData(accts,qKey);
@@ -2845,16 +3826,49 @@ function viewInsightsTab(accts){
 // opens the same full Account 360 detail view used everywhere else in the
 // app (openAcct), so there's exactly one place account data actually lives,
 // not a second parallel "scorecard" copy of it.
+function viewProductScorecard(accts){
+  if(!orgFeatureFlags.productLineScorecard){
+    return `<div class="card"><h3>Product <span class="sortbar">${ceTest10ToggleHtml()}</span> <span class="hint">org-config gated feature</span></h3>
+      <p class="mini" style="margin-bottom:12px">The active config doesn't have product-line scorecards turned on. Law Enforcement's config enables it (goals/risk/qualifying info tracked per product family, aggregating up to account level) - switch to that config in Configure Org Data, or turn the flag on for your current one.</p>
+      <button type="button" class="btn sm" onclick="setTab('model')">Go to Configure Org Data</button>
+    </div>`;
+  }
+  const scored=accts.filter(a=>productScorecards[a.id] && Object.keys(productScorecards[a.id]).length);
+  const totalFamilies=scored.reduce((s,a)=>s+Object.keys(productScorecards[a.id]).length,0);
+  const atRiskFamilies=scored.reduce((s,a)=>s+acctProductRiskRollup(a.id).atRisk,0);
+  return `<div class="card"><h3>Product <span class="hint">product-line goals/risk, captured from Account 360, aggregated here</span></h3>
+    <div class="kpis" style="margin:14px 0">
+      <div class="kpi"><div class="l">Accounts scored</div><div class="v">${scored.length}</div><div class="d">of ${accts.length} in scope</div></div>
+      <div class="kpi"><div class="l">Product lines tracked</div><div class="v">${totalFamilies}</div><div class="d">across scored accounts</div></div>
+      <div class="kpi risk-red"><div class="l">At-risk product lines</div><div class="v">${atRiskFamilies}</div><div class="d">needs attention</div></div>
+    </div>
+  </div>
+  <div class="card"><h3>Accounts</h3>
+    ${scored.length?`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Product lines</th><th class="num">Healthy</th><th class="num">Watch</th><th class="num">At risk</th></tr></thead><tbody>
+    ${scored.map(a=>{ const r=acctProductRiskRollup(a.id); return `<tr onclick="openAcct('${a.id}')" style="cursor:pointer"><td><b>${esc(a.name)}</b></td><td>${ownerCell(a.ownerName)}</td><td class="num">${r.total}</td><td class="num">${r.healthy}</td><td class="num">${r.watch}</td><td class="num">${r.atRisk}</td></tr>`; }).join('')}
+    </tbody></table>`:'<p class="mini">No accounts scored yet — open an account, view its Products Purchased card, then set goals/risk in the Product-line scorecard card that appears below it.</p>'}
+  </div>`;
+}
 function viewAcctScorecard(accts){
   const sorted=[...accts].sort((a,b)=>b.renewalAmount-a.renewalAmount);
-  return `<div class="card"><h3>Account</h3>
+  const totalTcv=accts.reduce((s,a)=>s+(a.renewalAmount||0),0);
+  const withHealth=accts.filter(a=>a.health!=null);
+  const avgHealth=withHealth.length?Math.round(withHealth.reduce((s,a)=>s+a.health,0)/withHealth.length):null;
+  const healthy=accts.filter(a=>a.tier==='healthy').length;
+  const atRisk=accts.filter(a=>a.tier==='atrisk').length;
+  const riskArr=accts.reduce((s,a)=>s+(a.riskARR||0),0);
+  return `<div class="card"><h3>Account <span class="sortbar">${ceTest10ToggleHtml()}${riskTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()" title="Pull the latest NPS/CSAT survey responses and re-evaluate triggers">↻ Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():''}</span>`:''}</span></h3>
+    <div class="kpis" style="margin:14px 0">
+      <div class="kpi"><div class="l">Accounts</div><div class="v">${accts.length}</div><div class="d">in scope</div></div>
+      <div class="kpi"><div class="l">Total Contract Value</div><div class="v">${fmtMoney(totalTcv)}</div><div class="d">across scope</div></div>
+      <div class="kpi"><div class="l">Avg health</div><div class="v" style="color:${avgHealth==null?'var(--muted)':avgHealth>=75?'var(--green)':avgHealth>=50?'var(--amber)':'var(--red)'}">${avgHealth==null?'—':avgHealth}</div><div class="d">${healthy} healthy · ${atRisk} at risk</div></div>
+      <div class="kpi risk-red"><div class="l">ARR at risk</div><div class="v">${fmtMoney(riskArr)}</div><div class="d">renewal ARR × risk</div></div>
+    </div>
     <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th></tr></thead><tbody>
     ${sorted.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td></tr>`).join('')}
     </tbody></table>
   </div>`;
 }
-function viewProdScorecard(){ return scaffoldView('Product Scorecard','quantitative graded rollup at the product level',[
-  'Distinct from Product Outcomes — graded snapshot, not goal-progress narrative','Mirrors the existing CSM Scorecard pattern at product grain']); }
 function viewIntegrations(){ return scaffoldView('Integrations & Data Sources','third-party system context and the real-Salesforce-server connection',[
   'Comparisons referenced: Enterprise, law enforcement, Prepared, Carbyne, Totango','Real Salesforce server connection is a backend/technical requirement, not a customer-facing feature']); }
 const HUES=['ty','tb','tv','tg','ta','tr'];
@@ -2874,8 +3888,8 @@ function ownerCell(name){
   return `<span class="owner-cell">${avatarChip(name)}<span>${esc(name)}</span></span>`;
 }
 function catTag(cat,extra){ return `<span class="tag ${hueFor(cat)}"${extra?` style="${extra}"`:''}>${esc(cat)}</span>`; }
-function healthCell(h){ const c=h>=75?'var(--green)':h>=50?'var(--amber)':'var(--red)'; return `<span class="hs"><span class="bar"><i style="width:${h}%;background:${c}"></i></span><b style="color:${c}">${h}</b></span>`; }
-function tierPill(t){ return t==='healthy'?'<span class="pill p-green">Healthy</span>':t==='watch'?'<span class="pill p-amber">Watch</span>':'<span class="pill p-red">At risk</span>'; }
+function healthCell(h){ if(h==null) return `<span class="hs"><span class="bar"><i style="width:0%"></i></span><b style="color:var(--muted)">—</b></span>`; const c=h>=75?'var(--green)':h>=50?'var(--amber)':'var(--red)'; return `<span class="hs"><span class="bar"><i style="width:${h}%;background:${c}"></i></span><b style="color:${c}">${h}</b></span>`; }
+function tierPill(t){ if(t==null) return '<span class="pill p-gray">No data</span>'; return t==='healthy'?'<span class="pill p-green">Healthy</span>':t==='watch'?'<span class="pill p-amber">Watch</span>':'<span class="pill p-red">At risk</span>'; }
 function sevPill(s){ const m={Critical:'p-red',High:'p-red',Medium:'p-amber',Low:'p-gray'}; return `<span class="pill ${m[s]||'p-gray'}">${s}</span>`; }
 function statusPill(s){ const m={Open:'p-red','In Progress':'p-amber',Resolved:'p-green'}; return `<span class="pill ${m[s]||'p-gray'}">${s}</span>`; }
 
@@ -2921,7 +3935,7 @@ function renderCsmDdList(q){
 function pickCsmDd(name){ csmDdOpen=false; csmDdFilter=''; setOwnerFilter(name); }
 
 function setScope(id){ STATE.scope=id; route(); }
-function setTab(t){ currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; STATE.tab=t; navOpenCat=categoryForTab(t).id; window.scrollTo(0,0); route(); }
+function setTab(t){ currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; currentPredictiveAcctId=null; currentPlanAcctId=null; currentPlanMilestone=null; STATE.tab=t; navOpenCat=categoryForTab(t).id; window.scrollTo(0,0); route(); }
 
 function tabBadges(){
   return {
@@ -2936,16 +3950,29 @@ function tabBadges(){
 function route(){
   if(!STATE.tree) return;
   if(!STATE.nodeIndex[STATE.scope]) STATE.scope='ROOT';
+  // Runs before any early-return branch so the nav badge stays current no
+  // matter which page is actually open right now.
+  detectRiskStageShifts();
   if(currentAcctView){ renderAcctPage(); renderNav(); wrapWideTables(); return; }
   if(currentEngagementCtaId){ renderEngagementCtaPage(); renderNav(); wrapWideTables(); return; }
   if(currentCsmView){ renderCsmProfilePage(); renderNav(); wrapWideTables(); return; }
+  if(currentPredictiveAcctId){ renderPredictiveInsightPage(); renderNav(); wrapWideTables(); return; }
+  if(currentPlanMilestone){ renderPlanMilestonePage(); renderNav(); wrapWideTables(); return; }
+  if(currentPlanAcctId){ renderPlanPage(); renderNav(); wrapWideTables(); return; }
   STATE.accounts.forEach(a=>a.readiness=readinessScore(a));
   const isHome = STATE.tab==='home';
   const hideScope = isHome || STATE.tab==='npsagency';
   $('#scopebar').style.display = hideScope ? 'none' : '';
   if(!hideScope) renderCrumb();
   const accts0 = accountsUnder(STATE.scope);
-  const accts = ownerFilter ? accts0.filter(a=>a.ownerName===ownerFilter) : accts0;
+  // riskTest10 is the single global Test 10 toggle - applied once here so every
+  // view function fed by `accts` scopes to the 10 pilot accounts automatically,
+  // rather than each page re-implementing its own Test10 filter. Test10 mode
+  // always shows the same fixed 10 accounts regardless of "View as"/org scope
+  // (same guarantee the risk-board sandbox already relied on), so it bypasses
+  // ownerFilter/scope entirely rather than intersecting with them.
+  const accts = riskTest10 ? STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name))
+    : (ownerFilter ? accts0.filter(a=>a.ownerName===ownerFilter) : accts0);
   const app=$('#app');
   if(STATE.tab==='home') app.innerHTML=viewHome();
   else if(STATE.tab==='overview') app.innerHTML=viewOverview(accts);
@@ -2956,22 +3983,23 @@ function route(){
   else if(STATE.tab==='engagement') app.innerHTML=viewClientEngagement(accts);
   else if(STATE.tab==='escalations') app.innerHTML=viewEscalations(accts);
   else if(STATE.tab==='activectas') app.innerHTML=viewActiveCtas(accts);
+  else if(STATE.tab==='predictive') app.innerHTML=viewPredictive(accts);
   else if(STATE.tab==='plans') app.innerHTML=viewPlans(accts);
+  else if(STATE.tab==='csemails') app.innerHTML=viewCsEmails(accts);
   else if(STATE.tab==='emails') app.innerHTML=viewEmails(accts);
   else if(STATE.tab==='worklist') app.innerHTML=viewWork(accts);
   else if(STATE.tab==='model') app.innerHTML=viewModel(accts);
   else if(STATE.tab==='resources') app.innerHTML=viewResources();
   else if(STATE.tab==='execreport') app.innerHTML=viewExecReport(accts);
   else if(STATE.tab==='gong') app.innerHTML=viewGong(accts);
-  else if(STATE.tab==='acctoutcomes') app.innerHTML=viewAcctOutcomes();
-  else if(STATE.tab==='prodoutcomes') app.innerHTML=viewProdOutcomes();
+  else if(STATE.tab==='acctoutcomes') app.innerHTML=viewAcctOutcomes(accts);
   else if(STATE.tab==='npsmanaged') app.innerHTML=viewNpsManaged(accts);
   else if(STATE.tab==='npsagency') app.innerHTML=viewNpsAgency(accts);
   else if(STATE.tab==='csat') app.innerHTML=viewCsatTab(accts);
   else if(STATE.tab==='insights') app.innerHTML=viewInsightsTab(accts);
   else if(STATE.tab==='acctscorecard') app.innerHTML=viewAcctScorecard(accts);
-  else if(STATE.tab==='prodscorecard') app.innerHTML=viewProdScorecard();
-  else if(STATE.tab==='integrations') app.innerHTML=viewIntegrations();
+else if(STATE.tab==='prodscorecard') app.innerHTML=viewProductScorecard(accts);
+    else if(STATE.tab==='integrations') app.innerHTML=viewIntegrations();
   // renderNav() runs BEFORE chart drawing on purpose: it's what opens/closes
   // the flyout sidebar, which resizes the main content area. Chart.js measures
   // its canvas at creation time - drawing charts before the flyout finishes
@@ -3023,51 +4051,76 @@ function viewHome(){
   // NPS added per the CS sponsor's consolidated stakeholder findings (10% of comp).
   // TAP status surfaced here too, per Leana's finding that hardware refresh status
   // belongs on the portfolio home dashboard, not just buried in a per-account view.
+  // 5th element is an importance tier (critical/high/normal), color-coded below -
+  // critical = something actively losing revenue right now, high = a leading
+  // indicator worth checking regularly, normal = informational/context.
   const kpis=[
-    ['Engagement rate',r.engagementPct+'%',r.inCadence+' of '+r.n+' accounts in outreach cadence','engagement'],
-    ['Growth (organic + expansion + transactional)',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard'],
-    ['Customer insights logged',insightsRecent,'last 30 days across the book','scorecard'],
-    ['Book NPS',npsR?npsR.score:'—',npsR?(npsR.n+' survey responses · '+npsR.promoters+' promoters, '+npsR.detractors+' detractors'):'no biannual survey responses on file','scorecard'],
-    ['Total Contract Value (book)',fmtMoney(r.arr),r.renewals+' open renewals','overview'],
-    ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% risk-weighted','riskboard'],
-    ['New logos to onboard',logos.length,planned+' with a success plan','plans'],
-    ['TAP refreshes due',tapOverdue+tapDueSoon,tapOverdue+' overdue · '+tapDueSoon+' due within 90 days','riskboard'],
+    ['Engagement rate',r.engagementPct+'%',r.inCadence+' of '+r.n+' accounts in outreach cadence','engagement','high'],
+    ['Growth (organic + expansion + transactional)',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard','normal'],
+    ['Customer insights logged',insightsRecent,'last 30 days across the book','scorecard','normal'],
+    ['Book NPS',npsR?npsR.score:'—',npsR?(npsR.n+' survey responses · '+npsR.promoters+' promoters, '+npsR.detractors+' detractors'):'no biannual survey responses on file','scorecard','high'],
+    ['Total Contract Value (book)',fmtMoney(r.arr),r.renewals+' open renewals','overview','normal'],
+    ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% risk-weighted','riskboard','critical'],
+    ['New logos to onboard',logos.length,planned+' with a success plan','plans','normal'],
+    ['TAP refreshes due',tapOverdue+tapDueSoon,tapOverdue+' overdue · '+tapDueSoon+' due within 90 days','riskboard','high'],
   ];
-  const features=[
-    ['Command Center','overview','Book-level KPIs, ARR at risk, health distribution, and your top revenue-weighted risk accounts.'],
-    ['Org Drill-down','hierarchy','Walk the exec → team → CSM → account hierarchy with roll-ups at every level.'],
-    ['Accounts & Risk','riskboard','Kanban board of every account by risk stage — renewals, TAP refreshes, case watch and escalations all live as dated events on the account card, moved automatically by the trigger engine.'],
-    ['CSM Scorecard','scorecard','Each CSM against the 4 metrics that actually matter: insights, engagement, and organic/expansion/transactional growth.'],
-    ['Engagement','engagement','Outreach cadence by book segment — see who is falling out of cadence before they go quiet.'],
-    ['Escalations','escalations','Every account with an active escalation — same record and checklist as Account 360, surfaced so nothing gets missed.'],
-    ['Active CTAs','activectas','Every non-escalation call-to-action with work still in flight — renewal, usage, case watch, cadence.'],
-    ['Success Plans','plans','Auto-generate onboarding + risk-aware plans for new logos, or build a custom plan for any account.'],
-    ['Email Outreach','emails','Filled customer and internal email templates — review, edit, then send yourself from Outlook/Gmail.'],
-    ['My Worklist','worklist','A prioritized action list ranked by urgency and revenue.'],
-    ['Health Model','model','Tune the health-score weights and the entire book re-scores instantly — no engineering ticket.'],
-    ['Resource Library','resources','Guides, SOPs and internal resources CSMs actually need — editable in real time so links never go stale.'],
-  ];
+  // Derived straight from NAV_CATEGORIES/TAB_LABELS (not a separately
+  // hand-maintained list) so this can never drift out of sync with the real
+  // nav rail again - a category renamed/removed there updates here for free.
+  // Only the per-category description below needs a human touch, and only
+  // when that category's actual purpose changes, not on routine tab shuffling.
+  const categoryDescriptions={
+    cockpit:'Book-level KPIs, ARR at risk, health distribution, your top revenue-weighted risk accounts, and your prioritized worklist.',
+    performance:'Account and CSM scorecards, the executive report, and where trigger weights/thresholds and org data integrations are configured.',
+    pulse:'Managed & Agency NPS, quarterly NPS/CSAT tracking, cross-account Customer Insights, and Usage & Adoption.',
+    risk:'Kanban board of every account by risk stage — renewals, TAP refreshes, case watch and escalations move automatically as the trigger engine fires.',
+    engagement:'Where every open trigger actually gets worked — Escalations, Active CTAs, Email Outreach, and Customer Contact Insights.',
+    journey:'Predictive Insights proposes a forward-looking timeline per account, which becomes a Success Plan, tracked in Customer Success Emails, and measured in Account Outcomes.',
+    resources:'Guides, SOPs, and every Salesforce object/field this app actually reads.',
+  };
+  const features=NAV_CATEGORIES.filter(c=>c.id!=='home').map(c=>[c.label,c.tabs[0],categoryDescriptions[c.id]||'']);
   return `
   <div class="hero">
     <div class="eyebrow">Customer Success · Command Center</div>
     <h2>Welcome to your CS Command Center</h2>
   </div>
-  <div class="kpis">${kpis.map(k=>`<div class="kpi clickable${/at risk/i.test(k[0])?' accent':''}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
-  <div class="grid2">
-    <div class="card"><h3>Where to start</h3>
-      <div class="features">${features.map(f=>`<div class="feature" onclick="setTab('${f[1]}')"><h4>${esc(f[0])}</h4><p>${esc(f[2])}</p><div class="go">Open →</div></div>`).join('')}</div>
-    </div>
+  <div class="kpis">${kpis.map(k=>{
+    const tier=k[4]==='critical'?' risk-red':k[4]==='high'?' risk-amber':'';
+    return `<div class="kpi clickable${tier}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`;
+  }).join('')}</div>
+  <div class="grid2" style="margin-top:16px">
     <div class="card"><h3>Book health</h3><div class="chartbox"><canvas id="cHome"></canvas></div>
       <div class="legend"><span><i class="dot" style="background:var(--green)"></i>Healthy ≥75</span><span><i class="dot" style="background:var(--amber)"></i>Watch 50–74</span><span><i class="dot" style="background:var(--red)"></i>At risk &lt;50</span></div>
-      ${logos.length?`<p class="mini" style="margin-top:14px"><b>${logos.length}</b> new-logo account${logos.length===1?'':'s'} to onboard. <a href="#" onclick="setTab('plans');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)"><b>Generate success plans →</b></a></p>`:''}
     </div>
+    <div class="card"><h3>NPS response split</h3><div class="chartbox"><canvas id="homeNpsDonut"></canvas></div>
+      ${npsR?`<div class="legend"><span><i class="dot" style="background:var(--green)"></i>Promoters (${npsR.promoters})</span><span><i class="dot" style="background:var(--amber)"></i>Passives (${npsR.passives})</span><span><i class="dot" style="background:var(--red)"></i>Detractors (${npsR.detractors})</span></div>`:'<p class="mini">No survey responses on file.</p>'}
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px"><h3>Trigger breakdown <span class="hint">every open risk trigger, book-wide</span></h3><div class="chartbox"><canvas id="riskEscDonut"></canvas></div></div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="card"><h3>Escalations vs Active CTAs</h3><div class="chartbox"><canvas id="ceSplitDonut"></canvas></div></div>
+    <div class="card"><h3>Active, Pending, Resolved <span class="hint">across all Escalations + Active CTAs</span></h3><div class="chartbox"><canvas id="ceTotalProgDonut"></canvas></div></div>
+  </div>
+  ${logos.length?`<p class="mini" style="margin:14px 4px"><b>${logos.length}</b> new-logo account${logos.length===1?'':'s'} to onboard. <a href="#" onclick="setTab('plans');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)"><b>Generate success plans →</b></a></p>`:''}
+  <div class="card" style="margin-top:16px"><h3>Where to start</h3>
+    <div class="features">${features.map(f=>`<div class="feature" onclick="setTab('${f[1]}')"><h4>${esc(f[0])}</h4><p>${esc(f[2])}</p><div class="go">Open →</div></div>`).join('')}</div>
   </div>`;
 }
+// Reuses the exact same chart-drawing functions as Accounts & Risk (trigger
+// breakdown) and Client Engagement (escalations/CTAs split, progress donut) -
+// same canvases, same data, no duplicated chart logic - plus one Home-only
+// NPS response-split donut.
 function drawHomeChart(){
   Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}}); charts={};
-  const r=rollup(STATE.accounts);
+  const accts=STATE.accounts;
+  const r=rollup(accts);
   const hc=window.AXON_THEME?['#1a9e5c','#d4890a','#d64545']:['#3ddc97','#ffb84d','#ff6b6b'];
   const h=$('#cHome'); if(h){ charts.home=new Chart(h,{type:'doughnut',data:{labels:['Healthy','Watch','At risk'],datasets:[{data:[r.green,r.amber,r.red],backgroundColor:hc,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',legend:false,noScales:true})}); }
+  const npsR=npsRollup(accts);
+  const nEl=$('#homeNpsDonut');
+  if(nEl && npsR) charts.homeNps=new Chart(nEl,{type:'doughnut',data:{labels:['Promoters','Passives','Detractors'],datasets:[{data:[npsR.promoters,npsR.passives,npsR.detractors],backgroundColor:hc,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',legend:false,noScales:true})});
+  drawRiskEscalationCharts(accts);
+  drawClientEngagementCharts(accts);
 }
 
 // ---- Overview ----
@@ -3079,13 +4132,21 @@ function viewOverview(accts){
     ['Growth in scope',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard'],
     ['Total Contract Value in scope',fmtMoney(r.arr),r.renewals+' open renewals','riskboard'],
     ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% of book, risk-weighted','riskboard'],
-    ['Avg health (ARR-wtd)',r.health,r.red+' at-risk · '+r.amber+' watch · '+r.green+' healthy','model'],
+    ['Avg health (ARR-wtd)',r.health==null?'—':r.health,r.red+' at-risk · '+r.amber+' watch · '+r.green+' healthy','model'],
     ['NPS in scope',npsR?npsR.score:'—',npsR?(npsR.n+' of '+accts.length+' accounts surveyed'):'no survey responses in scope','scorecard'],
     ['Open escalations',STATE.escList.filter(e=>accts.includes(e.acct)&&e.status!=='Resolved').length,r.high+' high/urgent · '+r.cases+' open cases','riskboard'],
     ['Expansion-ready accounts',accts.filter(a=>opportunityTier(a)==='expand').length,accts.filter(a=>opportunityTier(a)==='protect').length+' to protect & retain instead','hierarchy'],
   ];
   const topRisk=[...accts].sort((a,b)=>b.riskARR-a.riskARR).slice(0,8);
+  const gSel=globalQSel||defaultQSel();
   return `
+  <div class="card" style="margin-bottom:16px"><h3>Global controls <span class="hint">apply to every category and sub-category across the app</span></h3>
+    <div class="row-actions" style="margin-bottom:10px">
+      <button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setRiskTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book (Test 10 off)':'Test 10 (whole app)'}</button>
+      <span class="mini">${riskTest10?'Every tab is scoped to the 10 pilot accounts until you toggle this back.':'Scopes literally every tab — Accounts &amp; Risk, Engagement, Journey, Pulse, Performance — to just the 10 pilot accounts.'}</span>
+    </div>
+    ${quarterToggleHtml(gSel,'setGlobalQYear','setGlobalQQ')}
+  </div>
   <div class="kpis">${kpis.map(k=>`<div class="kpi clickable${/at risk/i.test(k[0])?' accent':''}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   <div class="grid2">
     <div class="card"><h3>Total Contract Value by team</h3><div class="chartbox"><canvas id="cTeam"></canvas></div></div>
@@ -3248,7 +4309,7 @@ function shortName(n){ return n.length>16?n.slice(0,15)+'…':n; }
 function execReportRows(accts){
   return accts.map(a=>({
     AccountId:a.id, Account:a.name, State:a.state||'', Owner:a.ownerName, Segment:a.segment||'', Tier:OPP_TIER_LABELS[opportunityTier(a)],
-    Health:a.health, TotalContractValue:a.renewalAmount, ARRAtRisk:Math.round(a.riskARR), AnnualizedRevenue:a.ltv||0,
+    Health:a.health==null?'':a.health, TotalContractValue:a.renewalAmount, ARRAtRisk:a.riskARR==null?null:Math.round(a.riskARR), AnnualizedRevenue:a.ltv||0,
     OpenCases:a.openCases, HighUrgentCases:a.highCases, BlockedCases:a.casesBlocked||0, AgingCases:a.casesAging||0,
     NPS:a.nps==null?'':a.nps, OpenCTAs:ctas.filter(c=>c.acctId===a.id&&c.status!=='Done').length,
     TapStatus:a.tapStatus||'', EscalationStatus:peekEscState(a.id).status||'', LoggedActivityCount:(activityFor(a.id).log||[]).length,
@@ -3265,7 +4326,8 @@ function downloadCSV(filename,rows){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function exportExecReportCsv(){
-  const accts=ownerFilter?accountsUnder(STATE.scope).filter(a=>a.ownerName===ownerFilter):accountsUnder(STATE.scope);
+  const accts=riskTest10?STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name))
+    :(ownerFilter?accountsUnder(STATE.scope).filter(a=>a.ownerName===ownerFilter):accountsUnder(STATE.scope));
   downloadCSV('axon-cs-executive-report-'+sfDate(new Date())+'.csv',execReportRows(accts));
 }
 function viewExecReport(accts){
@@ -3277,7 +4339,7 @@ function viewExecReport(accts){
   const prodEntries=Object.entries(prodCounts).sort((a,b)=>b[1]-a[1]);
   const prodMax=Math.max(1,...prodEntries.map(([,n])=>n));
   const bar=(label,n,max)=>`<div class="rollrow"><div class="rl">${esc(label)}</div><div class="rbarwrap"><div class="rbar" style="width:${max?Math.round(n/max*100):0}%"></div></div><div class="rn">${n}</div></div>`;
-  return `<div class="card"><h3>Executive report</h3>
+  return `<div class="card"><h3>Executive report <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
   <p class="mini" style="line-height:1.7">Sigma today rolls up CS activity — TAP notes, other CTA activity, and logged timeline/activity — into leadership reporting. This app has no Sigma/warehouse credentials in this environment, so it can't push there directly yet — but every number below is computed live from the same underlying signals (renewals, TAP, CTAs, escalations, logged activity), so it can stand in for that report today. Use <b>Export CSV</b> as the practical bridge into Sigma or any other BI tool until a real pipeline exists.</p>
   <div class="kpis" style="margin:14px 0">
     <div class="kpi"><div class="l">Total Contract Value</div><div class="v">${fmtMoney(r.arr)}</div><div class="d">${r.renewals} open renewals</div></div>
@@ -3301,7 +4363,7 @@ function viewExecReport(accts){
   <div class="card"><h3>Account-level detail <span class="hint">${rows.length} accounts in scope</span></h3>
   <div class="searchbar"><input id="xrsearch" placeholder="Filter accounts…" oninput="filterTable(this,'xrtbl')"></div>
   <table id="xrtbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th>Tier</th><th class="num">Health</th><th class="num">Total Contract Value</th><th class="num">ARR at risk</th><th class="num">Open CTAs</th><th>TAP status</th><th>Escalation</th><th class="num">Logged activity</th></tr></thead><tbody>
-  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b> <span class="tag ${hueFor(row.State||'—')}">${esc(row.State||'—')}</span></td><td>${ownerCell(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${row.Health}</td><td class="num">${fmtMoney(row.TotalContractValue)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${esc(row.TapStatus||'—')}</td><td>${esc(row.EscalationStatus||'—')}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
+  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b> <span class="tag ${hueFor(row.State||'—')}">${esc(row.State||'—')}</span></td><td>${ownerCell(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${row.Health===''?'—':row.Health}</td><td class="num">${fmtMoney(row.TotalContractValue)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${esc(row.TapStatus||'—')}</td><td>${esc(row.EscalationStatus||'—')}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
   </tbody></table>
   </div>`;
 }
@@ -3608,6 +4670,18 @@ function discoveryCard(id,p){
   </div>`;
 }
 function planProgress(p){ if(!p||!p.milestones||!p.milestones.length) return 0; return Math.round(p.milestones.filter(m=>m.done).length/p.milestones.length*100); }
+function quarterLabel(qKey){ const [y,q]=(qKey||currentQuarter()).split('-Q'); return 'Q'+q+' '+y; }
+// Success Plans run on the same quarterly cadence as the CSM-run customer
+// surveys (surveyState/currentQuarter) - a plan "expires" into Pending again
+// each new quarter unless it's fully complete, so the cycle keeps repeating
+// rather than a plan generated once ever counting as done forever.
+function planQuarterStatus(a,qKey){
+  qKey=qKey||currentQuarter();
+  const p=plans[a.id];
+  if(!p) return 'pending';
+  if(planProgress(p)===100) return 'completed';
+  return p.quarter===qKey ? 'generated' : 'pending';
+}
 // ---- Talk tracks ----
 // Short, reusable call scripts a CSM can open right from a plan step (or the
 // resource library). Kept in-app so guidance is consistent regardless of tenure.
@@ -3639,12 +4713,12 @@ const PLAN_TEMPLATES={
       'Establish executive alignment and a clear path to renewal'
     ],
     milestones:[
-      {day:7,title:'Executive kickoff & welcome call',detail:'Introduce the CS team, confirm goals and success criteria, and set the check-in cadence.',resources:[{kind:'email',id:'cust_welcome'},{kind:'talktrack',id:'tt_kickoff'},{kind:'resource',id:'r1'}]},
-      {day:14,title:'Map stakeholders & define success criteria',detail:'Identify the economic buyer, admins and champions; capture what success looks like in plan discovery.',resources:[{kind:'resource',id:'r1'}]},
-      {day:30,title:'Deployment & provisioning',detail:'Confirm hardware/software provisioned, Evidence.com configured, and integrations in place.',resources:[{kind:'resource',id:'r4'}]},
-      {day:45,title:'Admin & end-user training',detail:'Schedule Axon Academy training and confirm admins are certified.',resources:[{kind:'resource',id:'r3'},{kind:'email',id:'cust_product'}]},
-      {day:60,title:'Go-live / first adoption checkpoint',detail:'Verify real usage, review adoption metrics, and clear any blockers.',resources:[{kind:'talktrack',id:'tt_adoption'}]},
-      {day:90,title:'90-day value review & QBR',detail:'Recap value delivered against goals and align on the next quarter.',resources:[{kind:'talktrack',id:'tt_qbr'},{kind:'email',id:'cust_followup'}]},
+      {day:7,title:'Executive kickoff & welcome call',detail:'Open the relationship on the right foot: introduce the CS team, understand what success looks like to them, and set a cadence that keeps the conversation going.',resources:[{kind:'email',id:'cust_welcome'},{kind:'talktrack',id:'tt_kickoff'},{kind:'resource',id:'r1'}]},
+      {day:14,title:'Map stakeholders & define success criteria',detail:'Get to know who matters on their side — economic buyer, admins, champions — and capture what success means to them, not just to us.',resources:[{kind:'resource',id:'r1'}]},
+      {day:30,title:'Deployment & provisioning',detail:'Confirm hardware/software provisioned, Evidence.com configured, and integrations in place — a smooth deployment builds early trust.',resources:[{kind:'resource',id:'r4'}]},
+      {day:45,title:'Admin & end-user training',detail:'Invest in their team\'s confidence with the product: schedule Axon Academy training and confirm admins are certified.',resources:[{kind:'resource',id:'r3'},{kind:'email',id:'cust_product'}]},
+      {day:60,title:'Go-live / first adoption checkpoint',detail:'Check in on how it\'s actually landing with their team, review adoption together, and clear anything standing in the way.',resources:[{kind:'talktrack',id:'tt_adoption'}]},
+      {day:90,title:'90-day value review & QBR',detail:'A relationship milestone, not just a status update — recap the value delivered and use it to deepen alignment on what\'s next.',resources:[{kind:'talktrack',id:'tt_qbr'},{kind:'email',id:'cust_followup'}]},
     ]},
   renewal:{ label:'Renewal', desc:'Drive an on-time, full-value renewal.',
     objectives:[
@@ -3653,11 +4727,11 @@ const PLAN_TEMPLATES={
       'Surface and de-risk any blockers early'
     ],
     milestones:[
-      {day:7,title:'Renewal readiness review',detail:'Run the renewal readiness checklist and confirm the opportunity is staged correctly.',resources:[{kind:'email',id:'int_renewal'}]},
-      {day:14,title:'Build the value recap',detail:'Assemble usage, outcomes and support wins into a value recap deck.',resources:[{kind:'resource',id:'r5'},{kind:'talktrack',id:'tt_renewal'}]},
-      {day:30,title:'Executive value conversation',detail:'Present the value recap; confirm budget, timeline and decision process.',resources:[{kind:'email',id:'cust_renewal'},{kind:'talktrack',id:'tt_renewal'}]},
-      {day:45,title:'Proposal & paperwork',detail:'Send the renewal proposal and align procurement and legal.',resources:[{kind:'email',id:'int_renewal'},{kind:'resource',id:'r5'}]},
-      {day:60,title:'Confirm renewal / next steps',detail:'Close the renewal or document the path forward and any risks.',resources:[{kind:'email',id:'int_renewal'}]},
+      {day:7,title:'Renewal readiness review',detail:'Run the renewal readiness checklist so the actual renewal conversation can focus on value and the relationship, not scrambling on logistics.',resources:[{kind:'email',id:'int_renewal'}]},
+      {day:14,title:'Build the value recap',detail:'Assemble usage, outcomes and support wins into a value recap that shows we\'ve been paying attention to their success.',resources:[{kind:'resource',id:'r5'},{kind:'talktrack',id:'tt_renewal'}]},
+      {day:30,title:'Executive value conversation',detail:'A relationship conversation first, a renewal ask second: present the value recap and confirm budget/timeline together.',resources:[{kind:'email',id:'cust_renewal'},{kind:'talktrack',id:'tt_renewal'}]},
+      {day:45,title:'Proposal & paperwork',detail:'Send the renewal proposal and align procurement and legal — keep it easy on their end.',resources:[{kind:'email',id:'int_renewal'},{kind:'resource',id:'r5'}]},
+      {day:60,title:'Confirm renewal / next steps',detail:'Close the renewal, and use the moment to reaffirm the relationship heading into the next term.',resources:[{kind:'email',id:'int_renewal'}]},
     ]},
   tap:{ label:'TAP hardware refresh', desc:'Complete the 2.5-year hardware refresh cleanly.',
     objectives:[
@@ -3666,11 +4740,11 @@ const PLAN_TEMPLATES={
       'Use the refresh as a value & expansion touchpoint'
     ],
     milestones:[
-      {day:7,title:'Confirm refresh eligibility & timeline',detail:'Verify contract dates and the units eligible for the TAP refresh.',resources:[{kind:'email',id:'int_tap'}]},
-      {day:14,title:'Coordinate with the customer',detail:'Schedule the refresh conversation and set expectations on logistics.',resources:[{kind:'email',id:'cust_tap'},{kind:'talktrack',id:'tt_tap'}]},
-      {day:30,title:'Align ops / fleet / logistics',detail:'Confirm shipping, provisioning and RMA of the old units.',resources:[{kind:'resource',id:'r2'}]},
-      {day:45,title:'Execute the refresh',detail:'Ship/deploy the new hardware and confirm activation.',resources:[{kind:'resource',id:'r2'},{kind:'email',id:'cust_tap'}]},
-      {day:60,title:'Confirm completion & capture value',detail:'Verify all units are refreshed, log the outcome, and look for expansion.',resources:[{kind:'talktrack',id:'tt_qbr'}]},
+      {day:7,title:'Confirm refresh eligibility & timeline',detail:'Verify contract dates and the units eligible for the TAP refresh — get ahead of it before it becomes a scramble for them.',resources:[{kind:'email',id:'int_tap'}]},
+      {day:14,title:'Coordinate with the customer',detail:'Schedule the refresh conversation and set expectations on logistics — a proactive heads-up builds confidence going in.',resources:[{kind:'email',id:'cust_tap'},{kind:'talktrack',id:'tt_tap'}]},
+      {day:30,title:'Align ops / fleet / logistics',detail:'Confirm shipping, provisioning and RMA of the old units so their officers never feel the transition.',resources:[{kind:'resource',id:'r2'}]},
+      {day:45,title:'Execute the refresh',detail:'Ship/deploy the new hardware and confirm activation — check in during the process, not just at the end.',resources:[{kind:'resource',id:'r2'},{kind:'email',id:'cust_tap'}]},
+      {day:60,title:'Confirm completion & capture value',detail:'Verify all units are refreshed, close the loop with the customer, and use the moment to talk about what\'s next for them.',resources:[{kind:'talktrack',id:'tt_qbr'}]},
     ]},
 };
 const PLAN_TYPE_ORDER=['onboarding','renewal','tap'];
@@ -3693,73 +4767,89 @@ function generatePlan(id,type){
     due:sfDate(new Date(base.getTime()+m.day*864e5)), done:false
   }));
   // Risk-aware addition: clear blocking support before other milestones.
-  if(a.highCases>0 || a.health<60) ms.push({id:uid(),title:'Resolve open support escalations',detail:'Clear high/urgent cases that block progress before the other milestones.',note:'',resources:[{kind:'email',id:'int_escalation'}],due:sfDate(new Date(base.getTime()+21*864e5)),done:false});
+  if(a.highCases>0 || (a.health!=null && a.health<60)) ms.push({id:uid(),title:'Resolve open support escalations',detail:'Clear high/urgent cases that block progress before the other milestones.',note:'',resources:[{kind:'email',id:'int_escalation'}],due:sfDate(new Date(base.getTime()+21*864e5)),done:false});
   ms.sort((x,y)=> x.due<y.due?-1:1);
-  plans[id]={acctId:id,planType:type,created:new Date().toISOString(),updatedAt:new Date().toISOString(),objectives:tpl.objectives.slice(),milestones:ms,notes:'',discovery:{},auto:true};
+  plans[id]={acctId:id,planType:type,quarter:currentQuarter(),created:new Date().toISOString(),updatedAt:new Date().toISOString(),objectives:tpl.objectives.slice(),milestones:ms,notes:'',discovery:{},auto:true};
   savePlans();
 }
-function generateAllNewLogos(){
-  const logos=STATE.accounts.filter(newLogo).filter(a=>!plans[a.id]);
-  logos.forEach(a=>generatePlan(a.id));
-  toast(`Generated ${logos.length} success plan${logos.length===1?'':'s'} for new-logo accounts.`);
-  route();
+// A plan's milestones come from the account's Predictive Insight timeline -
+// every entry point (this row action, Account 360's "Create Success Plan"
+// button, etc.) enforces insight-first, not just the Success Plans list.
+function createOrOpenPlan(id,type){
+  if(!plans[id]){
+    if(!predictiveInsightFor(id,currentQuarter())){ openPredictiveInsight(id); return; }
+    generatePlan(id,type);
+  }
+  setTab('plans'); openPlan(id);
 }
-function createOrOpenPlan(id,type){ if(!plans[id]) generatePlan(id,type); setTab('plans'); openPlan(id); }
-function planDueSoonCount(p){ return (p&&p.milestones||[]).filter(m=>!m.done && daysSince(m.due)!=null && daysSince(m.due)>=-14).length; }
-let plansKpiFilter=null; // null | 'active' | 'dueSoon' — set by clicking a KPI tile
+let plansKpiFilter=null; // null | 'generated' | 'pending' | 'completed' — set by clicking a KPI tile
 function setPlansKpi(k){ plansKpiFilter = plansKpiFilter===k?null:k; route(); }
+function setPlansYear(y){ setGlobalQYear(y); }
+function setPlansQ(q){ setGlobalQQ(q); }
 function viewPlans(accts){
-  const logos=accts.filter(newLogo);
-  const inScope=new Set(accts.map(a=>a.id));
-  const active=Object.values(plans).filter(p=>inScope.has(p.acctId));
-  const needPlan=logos.filter(a=>!plans[a.id]);
-  const dueSoon=active.reduce((n,p)=>n+planDueSoonCount(p),0);
+  const sel=globalQSel||defaultQSel();
+  const qKey=quarterKeyOf(sel);
+  const isLive=qKey===currentQuarter();
+  const statusOf=a=>planQuarterStatus(a,qKey);
+  const generated=accts.filter(a=>statusOf(a)==='generated');
+  const pending=accts.filter(a=>statusOf(a)==='pending');
+  const completed=accts.filter(a=>statusOf(a)==='completed');
   const kpis=[
-    ['New logos in scope',logos.length,'first purchase within 12 months',null],
-    ['Plans active',active.length,needPlan.length+' new logos still need one','active'],
-    ['Milestones due soon',dueSoon,'open & due within 2 weeks','dueSoon'],
+    ['Accounts in scope',accts.length,'all accounts',null],
+    ['Plans generated',generated.length,sel.year+' Q'+sel.q+' cycle','generated'],
+    ['Plans pending',pending.length,'not yet generated this cycle','pending'],
+    ['Plans completed',completed.length,'all milestones done','completed'],
   ];
-  let html=`<div class="card"><h3>Success Plans</h3>
+  let html=`<div class="card"><h3>Success Plans <span class="hint">quarterly cycle — same cadence as the quarterly customer survey</span></h3>
+  ${quarterToggleHtml(sel,'setPlansYear','setPlansQ')}
   <div class="kpis" style="margin-bottom:14px">${kpis.map(k=>`<div class="kpi clickable${k[3]&&plansKpiFilter===k[3]?' selected':''}" onclick="setPlansKpi(${k[3]?`'${k[3]}'`:'null'})"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
-  ${plansKpiFilter?`<p class="mini" style="margin:-6px 0 6px">Filtered to <b>${plansKpiFilter==='active'?'accounts with an active plan':'plans with milestones due soon'}</b> · <a href="#" onclick="setPlansKpi('${plansKpiFilter}');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></p>`:''}
-  <div class="row-actions" style="margin-bottom:6px">
-    <button class="btn primary" onclick="generateAllNewLogos()" ${needPlan.length?'':'disabled'}>Generate plans for all new logos${needPlan.length?` (${needPlan.length})`:''}</button>
-    <span class="mini">Auto-builds an onboarding + risk-aware plan, then you customize it.</span>
-  </div></div>`;
+  ${plansKpiFilter?`<p class="mini" style="margin:-6px 0 6px">Filtered to <b>${esc(plansKpiFilter)}</b> · <a href="#" onclick="setPlansKpi('${plansKpiFilter}');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></p>`:''}
+  ${!isLive?`<p class="mini" style="margin:6px 0 0">Viewing ${sel.year} Q${sel.q} — a past/future cycle. Generating a new plan or insight always applies to the live quarter (${quarterLabel(currentQuarter())}).</p>`:''}
+  </div>`;
 
-  // New logos needing onboarding
-  let logosShown=logos;
-  if(plansKpiFilter==='active') logosShown=logos.filter(a=>plans[a.id]);
-  else if(plansKpiFilter==='dueSoon') logosShown=logos.filter(a=>planDueSoonCount(plans[a.id])>0);
-  html+=`<div class="card"><h3>New logos to onboard <span class="hint">${logosShown.length} of ${logos.length} account${logos.length===1?'':'s'} shown · newest customers first</span></h3>`;
-  if(!logos.length){ html+=`<p class="mini">No new-logo accounts in this scope. A "new logo" is an account whose first closed-won deal landed within the last 12 months.</p>`; }
-  else if(!logosShown.length){ html+=`<p class="mini">No new logos match this filter.</p>`; }
-  else{
-    const sorted=[...logosShown].sort((a,b)=> (b.firstPurchase||'').localeCompare(a.firstPurchase||''));
-    html+=`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">First purchase</th><th class="num">Annualized Revenue</th><th>Health</th><th>Plan</th><th></th></tr></thead><tbody>
-    ${sorted.map(a=>{const p=plans[a.id];const prog=planProgress(p);return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${esc(a.firstPurchase||'—')}</td><td class="num">${fmtMoney(a.ltv)}</td><td>${healthCell(a.health)}</td><td>${p?`<span class="pill p-green">Plan · ${prog}%</span>`:'<span class="pill p-gray">None</span>'}</td><td class="row-actions">${p?`<button class="btn sm" onclick="openPlan('${a.id}')">Open</button>`:`<button class="btn primary sm" onclick="createOrOpenPlan('${a.id}')">Generate</button>`}</td></tr>`;}).join('')}
-    </tbody></table>`;
-  }
-  html+=`</div>`;
-
-  // Active plans (incl. custom, non-new-logo)
-  let custom=active.filter(p=>{ const a=STATE.accounts.find(x=>x.id===p.acctId); return a && !newLogo(a); });
-  if(plansKpiFilter==='dueSoon') custom=custom.filter(p=>planDueSoonCount(p)>0);
-  if(custom.length){
-    html+=`<div class="card"><h3>Other active plans</h3>
-    <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th>Progress</th><th></th></tr></thead><tbody>
-    ${custom.map(p=>{const a=STATE.accounts.find(x=>x.id===p.acctId);const prog=planProgress(p);return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td><div class="progress" style="width:120px"><i style="width:${prog}%"></i></div><span class="mini">${prog}%</span></td><td><button class="btn sm" onclick="openPlan('${a.id}')">Open</button></td></tr>`;}).join('')}
-    </tbody></table></div>`;
-  }
-  html+=`<p class="mini" style="margin:2px 4px">Tip: open any account (from any tab) and use <b>Create / open success plan</b> to build a customized plan — it doesn't have to be a new logo.</p>`;
+  let shown=accts;
+  if(plansKpiFilter) shown=accts.filter(a=>statusOf(a)===plansKpiFilter);
+  const sorted=[...shown].sort((a,b)=>a.name.localeCompare(b.name));
+  html+=`<div class="card"><h3>All accounts <span class="hint">${sorted.length} of ${accts.length} shown</span></h3>
+  <table><thead><tr><th>Account</th><th>Owner</th><th>Predictive insight</th><th>Plan status</th><th>Progress</th><th></th></tr></thead><tbody>
+  ${sorted.map(a=>{
+    const p=plans[a.id]; const prog=planProgress(p); const hasInsight=!!predictiveInsightFor(a.id,qKey);
+    const st=statusOf(a);
+    const stPill=st==='completed'?'<span class="pill p-green">Completed</span>':st==='generated'?'<span class="pill p-blue">Generated</span>':'<span class="pill p-gray">Pending</span>';
+    const insightPill=hasInsight?'<span class="pill p-violet">Generated</span>':'<span class="pill p-gray">Not yet</span>';
+    let action;
+    if(!hasInsight) action=`<button class="btn sm" onclick="openPredictiveInsight('${a.id}')">Generate insights first</button>`;
+    else if(!p) action=`<button class="btn primary sm" onclick="createOrOpenPlan('${a.id}')">Generate plan</button>`;
+    else action=`<button class="btn sm" onclick="openPlan('${a.id}')">Open</button>`;
+    return `<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${insightPill}</td><td>${stPill}</td><td>${p?`<div class="progress" style="width:100px"><i style="width:${prog}%"></i></div><span class="mini">${prog}%</span>`:'—'}</td><td>${action}</td></tr>`;
+  }).join('')}
+  </tbody></table></div>`;
+  html+=`<p class="mini" style="margin:2px 4px">A plan needs a Predictive Insight generated first — the timeline it proposes is what populates the plan's milestones.</p>`;
   return html;
 }
+// Full page (same pattern as Account 360/CTA chevron/Predictive Insight - a
+// dedicated page with a "← Back" button, not a #sheet overlay), so a Success
+// Plan is somewhere you navigate to and work in, not a half-screen drawer.
+let currentPlanAcctId = null;
 function openPlan(id){
   if(!plans[id]) generatePlan(id);
-  const p=plans[id]; const a=STATE.accounts.find(x=>x.id===id); if(!p||!a) return;
+  currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; currentPredictiveAcctId=null; currentPlanMilestone=null;
+  currentPlanAcctId=id;
+  route();
+  window.scrollTo(0,0);
+}
+function closePlan(){ currentPlanAcctId=null; route(); window.scrollTo(0,0); }
+function renderPlanPage(){
+  const p=plans[currentPlanAcctId]; const a=STATE.accounts.find(x=>x.id===currentPlanAcctId);
+  if(!p||!a){ currentPlanAcctId=null; route(); return; }
+  $('#scopebar').style.display='none';
+  $('#app').innerHTML=planPageHtml(currentPlanAcctId,p,a);
+}
+function planPageHtml(id,p,a){
   const prog=planProgress(p);
-  const sheet=$('#sheet');
-  sheet.innerHTML=`<div class="hd"><div><h2>Success Plan — ${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)} · ${newLogo(a)?'New logo · first purchase '+esc(a.firstPurchase||''):'Established account'} · Renewal ${a.dclose>9000?'—':'in '+a.dclose+'d'}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  return `<div class="card acct-hd"><div class="hd"><div><h2><span style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="openAcct('${id}')">${esc(a.name)}</span> ${stateTag(a)}</h2>
+    <div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Success Plan · Owner ${ownerCell(a.ownerName)} · ${newLogo(a)?'New logo · first purchase '+esc(a.firstPurchase||''):'Established account'} · Renewal ${a.dclose>9000?'—':'in '+a.dclose+'d'}</div></div>
+    <button class="btn sm" onclick="closePlan()">← Back</button></div></div>
   <div class="bd">
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Progress <span class="hint">${p.milestones.filter(m=>m.done).length} of ${p.milestones.length} milestones complete</span></h3>
       <div class="progress"><i style="width:${prog}%"></i></div>
@@ -3777,6 +4867,7 @@ function openPlan(id){
       <textarea class="obj-in" id="planObj" oninput="setPlanObjectives('${id}',this.value)">${esc((p.objectives||[]).join('\n'))}</textarea>
     </div>
     ${discoveryCard(id,p)}
+    ${msTimelineHtml(p)}
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Milestones</h3>
       <div id="planMs">${p.milestones.map(m=>msRow(id,m)).join('')}</div>
       <div class="row-actions" style="margin-top:10px"><button class="btn sm" onclick="addPlanMs('${id}')">+ Add milestone</button></div>
@@ -3790,19 +4881,80 @@ function openPlan(id){
       <button class="btn primary" onclick="openAcct('${id}')">Open account 360</button>
     </div>
   </div>`;
-  showOverlay();
+}
+// Horizontal timeline view of a plan's milestones - a bubble per milestone,
+// alternating above/below a date axis. Blue = the milestone carries an
+// attached escalation/CTA (clicking jumps into the account's actual live
+// engagement record - this is always the FIRST step when the account has an
+// active risk signal), red = an attached email template (clicking jumps
+// straight into that draft), black = anything else (clicking opens the
+// plain step-detail drawer). This is the forward-looking view Predictive
+// Insights populates into a plan; the vertical checklist below it remains
+// the editable source of truth.
+function msTlNodeKind(m){
+  const rs=m.resources||[];
+  if(rs.some(r=>r.kind==='engagement')) return 'engagement';
+  if(rs.some(r=>r.kind==='email')) return 'email';
+  return null;
+}
+// Status overrides the resource-kind color the moment there's real movement:
+// black/red/blue (msTlNodeKind) describes what a NOT-YET-ACTED-ON step
+// implies doing; once the email actually goes out it turns amber ("pending"
+// - sent, awaiting the outcome), and once the milestone is marked done it
+// turns green ("resolved") - same red/yellow/green progression an escalation
+// or CTA already shows elsewhere, just driven by the plan's own send/done
+// state instead of a separate trigger record.
+function msTlStatusClass(m){
+  if(m.done) return 'ms-resolved';
+  if(m.emailDraft && m.emailDraft.sent) return 'ms-pending';
+  return null;
+}
+function msTimelineHtml(p){
+  if(!p.milestones.length) return '';
+  const ms=[...p.milestones].sort((x,y)=>(x.due||'9999')<(y.due||'9999')?-1:1);
+  const items=ms.map((m,i)=>{
+    const pos=i%2===0?'above':'below';
+    const kind=msTlNodeKind(m);
+    const statusCls=msTlStatusClass(m);
+    const colorCls=statusCls||kind;
+    const cls=(colorCls?' '+colorCls:'')+(m.done?' done':'');
+    const title=statusCls==='ms-resolved'?'Resolved':statusCls==='ms-pending'?'Pending — email sent, awaiting outcome':kind==='engagement'?'Opens the account\'s active escalation/CTA':kind==='email'?'Opens an email draft':'Opens step details';
+    return `<div class="ms-tl-item ${pos}">
+      <div class="ms-tl-box${cls}" onclick="openPlanMilestoneNode('${p.acctId}','${m.id}')" title="${title}">${m.source==='predictive'?'<span class="pill p-violet" style="margin-right:4px;font-size:10px">Predictive</span>':''}${esc(m.title)}</div>
+      <div class="ms-tl-stem${colorCls?' '+colorCls:''}"></div>
+      <div class="ms-tl-dot${cls}" onclick="openPlanMilestoneNode('${p.acctId}','${m.id}')"></div>
+      <div class="ms-tl-date">${m.due?esc(fmtDate(m.due)):'no date'}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Timeline <span class="hint">blue = active escalation/CTA, red = email draft, amber = sent/pending, green = resolved · violet tag = from a Predictive Insight</span></h3>
+    <div class="ms-timeline">${items}</div>
+  </div>`;
+}
+// Where a forward-looking timeline node actually takes you - a milestone
+// carrying an attached escalation/CTA jumps straight to that live record
+// (that IS the step); everything else (email-carrying or plain) opens a
+// full-page step detail - same chevron-like pattern as an engagement CTA,
+// including a real inline draft-email card, not a trip to Email Outreach.
+function openPlanMilestoneNode(acctId,mid){
+  const p=plans[acctId]; if(!p) return;
+  const m=p.milestones.find(x=>x.id===mid); if(!m) return;
+  const engRes=(m.resources||[]).find(r=>r.kind==='engagement');
+  if(engRes){ viewEngagementForAccount(engRes.id); return; }
+  openPlanMilestonePage(acctId,mid);
 }
 function msRow(id,m){
   const rc=(m.resources||[]).length;
   return `<div class="milestone${m.done?' done':''}" data-ms="${m.id}">
     <input type="checkbox" ${m.done?'checked':''} onchange="togglePlanMs('${id}','${m.id}',this.checked)">
+    ${m.source==='predictive'?'<span class="pill p-violet" style="font-size:10px">Predictive</span>':''}
     <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${id}','${m.id}',this.value)">
     <input type="date" value="${esc(m.due||'')}" onchange="editPlanMsDue('${id}','${m.id}',this.value)">
-    <button class="btn sm" onclick="openPlanStep('${id}','${m.id}')">Open${rc?` · ${rc}`:''}</button>
+    <button class="btn sm" onclick="openPlanMilestoneNode('${id}','${m.id}')">Open${rc?` · ${rc}`:''}</button>
     <button class="btn sm" onclick="removePlanMs('${id}','${m.id}')">Remove</button>
   </div>`;
 }
-// ---- Plan step detail (click into a milestone) ----
+// ---- Plan milestone detail (click into a milestone) - full page, same
+// pattern as the CTA chevron/Account 360/Predictive Insight ----
 const STEP_RES_KINDS={email:'Email template',talktrack:'Talk track',resource:'Resource'};
 function resourceById(rid){ return resources.find(r=>r.id===rid); }
 function stepResLabel(r){
@@ -3810,32 +4962,77 @@ function stepResLabel(r){
   if(r.kind==='talktrack'){ const t=talkTrackById(r.id); return t?t.title:'Talk track'; }
   const res=resourceById(r.id); return res?res.title:'Resource';
 }
-function openPlanStep(id,mid){
-  const p=plans[id]; const a=STATE.accounts.find(x=>x.id===id); if(!p||!a) return;
-  const m=p.milestones.find(x=>x.id===mid); if(!m){ openPlan(id); return; }
+function planMilestoneEmailResource(m){ return (m.resources||[]).find(r=>r.kind==='email'); }
+let currentPlanMilestone = null; // {acctId, mid}
+function openPlanMilestonePage(acctId,mid){
+  const p=plans[acctId]; if(!p) return;
+  const m=p.milestones.find(x=>x.id===mid); if(!m) return;
   m.resources=m.resources||[];
+  currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; currentPredictiveAcctId=null;
+  currentPlanAcctId=acctId;
+  currentPlanMilestone={acctId,mid};
+  // Lazily seed a real, unsent draft the first time this step's page opens
+  // (if it carries an email template) - same "prefilled, not blank" pattern
+  // the CTA chevron and risk-board actions already use, so there's something
+  // real to review/send right here instead of a trip to Email Outreach.
+  const emailRes=planMilestoneEmailResource(m);
+  if(emailRes && !m.emailDraft){
+    const draft=buildEmailDraft(emailRes.id,acctId);
+    m.emailDraft={subject:draft?draft.subject:'',body:draft?draft.body:'',recipient:draft?draft.to:'',sent:false,sentAt:null};
+    touchPlan(acctId);
+  }
+  route();
+  window.scrollTo(0,0);
+}
+function closePlanMilestone(){ currentPlanMilestone=null; route(); window.scrollTo(0,0); }
+function renderPlanMilestonePage(){
+  const {acctId,mid}=currentPlanMilestone||{};
+  const p=plans[acctId]; const a=STATE.accounts.find(x=>x.id===acctId);
+  const m=p&&p.milestones.find(x=>x.id===mid);
+  if(!p||!a||!m){ currentPlanMilestone=null; route(); return; }
+  $('#scopebar').style.display='none';
+  $('#app').innerHTML=planMilestonePageHtml(acctId,p,a,m);
+}
+function planMilestonePageHtml(acctId,p,a,m){
   const overdue=!m.done && daysSince(m.due)!=null && daysSince(m.due)>0;
+  const emailRes=planMilestoneEmailResource(m);
   const resRows=m.resources.length?m.resources.map((r,i)=>{
     let action='';
-    if(r.kind==='email') action=`<button class="btn primary sm" onclick="planStepEmail('${id}','${r.id}')">Draft email</button>`;
-    else if(r.kind==='talktrack') action=`<button class="btn sm" onclick="openTalkTrack('${r.id}','${id}','${mid}')">Open talk track</button>`;
-    else { const res=resourceById(r.id); action=res?`<a class="btn sm" href="${esc(res.url)}" target="_blank" rel="noopener">Open</a>`:'<span class="mini">missing</span>'; }
-    return `<div class="resrow"><span><span class="pill p-gray" style="margin-right:8px">${esc(STEP_RES_KINDS[r.kind]||r.kind)}</span><b>${esc(stepResLabel(r))}</b></span><span class="row-actions">${action}<button class="btn sm" onclick="removeStepResource('${id}','${mid}',${i})">✕</button></span></div>`;
+    if(r.kind==='talktrack') action=`<button class="btn sm" onclick="openTalkTrack('${r.id}','${acctId}','${m.id}')">Open talk track</button>`;
+    else if(r.kind==='resource'){ const res=resourceById(r.id); action=res?`<a class="btn sm" href="${esc(res.url)}" target="_blank" rel="noopener">Open</a>`:'<span class="mini">missing</span>'; }
+    return `<div class="resrow"><span><span class="pill p-gray" style="margin-right:8px">${esc(STEP_RES_KINDS[r.kind]||r.kind)}</span><b>${esc(stepResLabel(r))}</b></span><span class="row-actions">${action}<button class="btn sm" onclick="removeStepResource('${acctId}','${m.id}',${i})">✕</button></span></div>`;
   }).join(''):'<p class="mini">No resources attached yet — add an email template, talk track or resource below.</p>';
-  const sheet=$('#sheet');
-  sheet.innerHTML=`<div class="hd"><div><h2>${esc(m.title)}</h2><div class="mini">Success plan step · ${esc(a.name)} · <span class="pill ${m.done?'p-green':overdue?'p-red':'p-amber'}">${m.done?'Complete':overdue?'Overdue':(m.due?'Due '+esc(m.due):'Open')}</span></div></div><button class="x" onclick="closeSheet()">✕</button></div>
+  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(m.title)} ${m.source==='predictive'?'<span class="pill p-violet">Predictive</span>':''}</h2>
+    <div class="mini">Success plan step · <span style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="openPlan('${acctId}')">${esc(a.name)}</span> · <span class="pill ${m.done?'p-green':overdue?'p-red':'p-amber'}">${m.done?'Complete':overdue?'Overdue':(m.due?'Due '+esc(m.due):'Open')}</span></div></div>
+    <button class="btn sm" onclick="openPlan('${acctId}')">← Back to plan</button></div></div>
   <div class="bd">
-    <div class="row-actions" style="margin-bottom:14px">
-      <button class="btn" onclick="openPlan('${id}')">← Back to plan</button>
-      <button class="btn ${m.done?'':'primary'}" onclick="togglePlanStepDone('${id}','${mid}',${!m.done})">${m.done?'Mark not done':'Mark done'}</button>
-    </div>
+    ${emailRes && m.emailDraft && !m.emailDraft.sent?`<div class="card" style="box-shadow:none;margin:0 0 16px;border:1px solid var(--red)">
+      <h4 style="margin:0 0 8px">Draft email — ${esc(stepResLabel(emailRes))}</h4>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <input type="text" id="msDraftTo_${m.id}" class="select" value="${esc(m.emailDraft.recipient||'')}" placeholder="Recipient">
+        <input type="text" id="msDraftSubject_${m.id}" class="select" value="${esc(m.emailDraft.subject||'')}" placeholder="Subject">
+        <textarea id="msDraftBody_${m.id}" class="select" rows="8" style="font:inherit">${esc(m.emailDraft.body||'')}</textarea>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button type="button" class="btn sm primary" onclick="sendPlanMilestoneEmail('${acctId}','${m.id}')">Send</button>
+        ${TEST10_ACCOUNTS.includes(a.name)?`<button type="button" class="btn sm" id="aiDraftBtn_ms_${m.id}" onclick="requestAiDraftForPlanMilestone('${acctId}','${m.id}')">Create AI draft</button>`:''}
+      </div>
+      <div id="aiDraftStatus_ms_${m.id}" class="mini" style="margin-top:6px;color:var(--muted2)"></div>
+    </div>`:''}
+    ${emailRes && m.emailDraft && m.emailDraft.sent?`<div class="card" style="box-shadow:none;margin:0 0 16px;background:var(--panel2);opacity:.85">
+      <h4 style="margin:0 0 6px">Email sent</h4>
+      <p class="mini">Sent ${esc(fmtDate(m.emailDraft.sentAt))} to ${esc(m.emailDraft.recipient||'—')} — "${esc(m.emailDraft.subject||'')}"</p>
+    </div>`:''}
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Step details</h3>
+      <div class="row-actions" style="margin-bottom:10px">
+        <button class="btn ${m.done?'':'primary'}" onclick="togglePlanStepDone('${acctId}','${m.id}',${!m.done})">${m.done?'Mark not done':'Mark done'}</button>
+      </div>
       <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:8px 0 4px">Title</label>
-      <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${id}','${mid}',this.value)" style="width:100%;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
+      <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${acctId}','${m.id}',this.value)" style="width:100%;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
       <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:12px 0 4px">Due</label>
-      <input type="date" value="${esc(m.due||'')}" onchange="editPlanMsDue('${id}','${mid}',this.value)" style="border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink);color-scheme:dark">
+      <input type="date" value="${esc(m.due||'')}" onchange="editPlanMsDue('${acctId}','${m.id}',this.value)" style="border:1px solid var(--line);padding:7px 9px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink);color-scheme:dark">
       <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:12px 0 4px">Guidance</label>
-      <textarea class="notes-in" style="min-height:60px" placeholder="What this step involves…" oninput="setStepDetail('${id}','${mid}',this.value)">${esc(m.detail||'')}</textarea>
+      <textarea class="notes-in" style="min-height:60px" placeholder="What this step involves…" oninput="setStepDetail('${acctId}','${m.id}',this.value)">${esc(m.detail||'')}</textarea>
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Resources for this step</h3>
       <div class="reslist">${resRows}</div>
@@ -3845,26 +5042,56 @@ function openPlanStep(id,mid){
           <optgroup label="Talk tracks">${TALK_TRACKS.map(t=>`<option value="talktrack:${t.id}">${esc(t.title)}</option>`).join('')}</optgroup>
           <optgroup label="Resource library">${resources.map(r=>`<option value="resource:${r.id}">${esc(r.title)}</option>`).join('')}</optgroup>
         </select>
-        <button class="btn primary sm" onclick="addStepResourceFromPicker('${id}','${mid}')">Attach</button>
+        <button class="btn primary sm" onclick="addStepResourceFromPicker('${acctId}','${m.id}')">Attach</button>
       </div>
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Step notes <span class="hint">what happened / what's next on this step</span></h3>
-      <textarea class="notes-in" placeholder="Progress, blockers, who owns the next action…" oninput="setStepNote('${id}','${mid}',this.value)">${esc(m.note||'')}</textarea>
+      <textarea class="notes-in" placeholder="Progress, blockers, who owns the next action…" oninput="setStepNote('${acctId}','${m.id}',this.value)">${esc(m.note||'')}</textarea>
     </div>
   </div>`;
-  showOverlay();
 }
 function setStepDetail(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.detail=v; touchPlan(id); } }
 function setStepNote(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.note=v; touchPlan(id); } }
-function togglePlanStepDone(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.done=done; touchPlan(id); openPlanStep(id,mid); } }
-function addStepResource(id,mid,kind,refId){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m)return; m.resources=m.resources||[]; if(m.resources.some(r=>r.kind===kind&&r.id===refId)){ toast('Already attached to this step.'); return; } m.resources.push({kind,id:refId}); touchPlan(id); openPlanStep(id,mid); }
+function togglePlanStepDone(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.done=done; touchPlan(id); route(); } }
+function addStepResource(id,mid,kind,refId){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m)return; m.resources=m.resources||[]; if(m.resources.some(r=>r.kind===kind&&r.id===refId)){ toast('Already attached to this step.'); return; } m.resources.push({kind,id:refId}); touchPlan(id); route(); }
 function addStepResourceFromPicker(id,mid){ const sel=document.getElementById('stepResPick'); if(!sel||!sel.value) return; const [kind,refId]=sel.value.split(':'); addStepResource(id,mid,kind,refId); }
-function removeStepResource(id,mid,idx){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m||!m.resources)return; m.resources.splice(idx,1); touchPlan(id); openPlanStep(id,mid); }
-function planStepEmail(id,templateId){ const p=plans[id]; if(!p) return; closeSheet(); startEmailCompose(templateId,p.acctId); toast('Draft ready on Email Outreach — review, then send from your mail app.'); }
+function removeStepResource(id,mid,idx){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m||!m.resources)return; m.resources.splice(idx,1); touchPlan(id); route(); }
+// Real send, right from the milestone page - same logging pattern every
+// other send in the app uses (emailDrafts entry so Customer Contact Insights
+// picks it up, activity touch, health rescore), tagged 'journey' so it also
+// surfaces on the Customer Success Emails tab.
+function sendPlanMilestoneEmail(acctId,mid){
+  const p=plans[acctId]; if(!p) return;
+  const m=p.milestones.find(x=>x.id===mid); if(!m||!m.emailDraft) return;
+  const subjEl=$('#msDraftSubject_'+mid), bodyEl=$('#msDraftBody_'+mid), toEl=$('#msDraftTo_'+mid);
+  if(subjEl) m.emailDraft.subject=subjEl.value;
+  if(bodyEl) m.emailDraft.body=bodyEl.value;
+  if(toEl) m.emailDraft.recipient=toEl.value;
+  if(!(m.emailDraft.subject||'').trim() || !(m.emailDraft.body||'').trim()){ toast('Add a subject and message body before sending.'); return; }
+  m.emailDraft.sent=true; m.emailDraft.sentAt=new Date().toISOString();
+  touchPlan(acctId);
+  const a=STATE.accounts.find(x=>x.id===acctId);
+  sendTest10DemoEmail(acctId,m.emailDraft.subject,m.emailDraft.body);
+  emailDrafts.unshift({id:cid(),t:new Date().toISOString(),action:'sent',templateId:'plan_'+(planMilestoneEmailResource(m)||{}).id,templateName:'Success Plan — '+m.title,audience:'customer',acctId,acctName:a?a.name:'',subject:m.emailDraft.subject,to:m.emailDraft.recipient,snippet:emailSnippet(m.emailDraft.body),source:'journey',stage:m.title});
+  emailDrafts=emailDrafts.slice(0,40); saveEmailDrafts();
+  if(a){
+    pushActivityEntry(acctId,'Email',m.emailDraft.subject||'(sent)','Sent via Success Plan milestone.');
+    syncLastActFromActivity(acctId);
+    try{ scoreAccount(a); }catch(e){}
+  }
+  toast('Sent — see Customer Contact Insights for the record.');
+  route();
+}
+function requestAiDraftForPlanMilestone(acctId,mid){
+  const p=plans[acctId]; if(!p) return; const m=p.milestones.find(x=>x.id===mid); if(!m) return;
+  const a=STATE.accounts.find(x=>x.id===acctId); if(!a||!TEST10_ACCOUNTS.includes(a.name)) return;
+  requestAiDraft('plan_'+acctId+'_'+mid,a.name,'journey','Success Plan milestone: '+(m.title||'')+(m.detail?' — '+m.detail:''),
+    {subject:'msDraftSubject_'+mid,body:'msDraftBody_'+mid,to:'msDraftTo_'+mid},'aiDraftBtn_ms_'+mid,'aiDraftStatus_ms_'+mid);
+}
 function openTalkTrack(ttId,backId,backMid){
   const t=talkTrackById(ttId); if(!t){ toast('Talk track not found.'); return; }
   const sheet=$('#sheet');
-  const back=backId?`<button class="btn" onclick="openPlanStep('${backId}','${backMid}')">← Back to step</button>`:`<button class="btn" onclick="closeSheet()">Close</button>`;
+  const back=backId?`<button class="btn" onclick="closeSheet();openPlanMilestonePage('${backId}','${backMid}')">← Back to step</button>`:`<button class="btn" onclick="closeSheet()">Close</button>`;
   sheet.innerHTML=`<div class="hd"><div><h2>${esc(t.title)}</h2><div class="mini">Talk track · ${esc(t.scenario)}</div></div><button class="x" onclick="closeSheet()">✕</button></div>
   <div class="bd">
     <div class="row-actions" style="margin-bottom:14px">${back}<button class="btn primary" onclick="copyTalkTrack('${ttId}')">Copy script</button></div>
@@ -3877,38 +5104,61 @@ function regenPlanAs(id,type){ if(!PLAN_TEMPLATES[type]) return; if(!confirm('Re
 function touchPlan(id){ if(plans[id]){ plans[id].updatedAt=new Date().toISOString(); savePlans(); } }
 function setPlanObjectives(id,v){ if(!plans[id])return; plans[id].objectives=v.split('\n').map(s=>s.trim()).filter(Boolean); touchPlan(id); }
 function setPlanNotes(id,v){ if(!plans[id])return; plans[id].notes=v; touchPlan(id); }
-function togglePlanMs(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.done=done; touchPlan(id); openPlan(id); }
+function togglePlanMs(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.done=done; touchPlan(id); route(); }
 function editPlanMsTitle(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.title=v; touchPlan(id); }
-function editPlanMsDue(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.due=v; touchPlan(id); openPlan(id); }
-function addPlanMs(id){ const p=plans[id];if(!p)return; p.milestones.push({id:'m'+Math.random().toString(36).slice(2,9),title:'New milestone',due:sfDate(new Date(Date.now()+14*864e5)),done:false}); touchPlan(id); openPlan(id); }
-function removePlanMs(id,mid){ const p=plans[id];if(!p)return; p.milestones=p.milestones.filter(x=>x.id!==mid); touchPlan(id); openPlan(id); }
+function editPlanMsDue(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.due=v; touchPlan(id); route(); }
+function addPlanMs(id){ const p=plans[id];if(!p)return; p.milestones.push({id:'m'+Math.random().toString(36).slice(2,9),title:'New milestone',due:sfDate(new Date(Date.now()+14*864e5)),done:false}); touchPlan(id); route(); }
+function removePlanMs(id,mid){ const p=plans[id];if(!p)return; p.milestones=p.milestones.filter(x=>x.id!==mid); touchPlan(id); route(); }
 function regenPlan(id){ if(!confirm('Regenerate this plan from the template? Your edits to milestones, objectives and notes will be replaced.')) return; delete plans[id]; generatePlan(id); openPlan(id); toast('Plan regenerated from template.'); }
-function delPlan(id){ if(!confirm('Delete this success plan? This cannot be undone.')) return; delete plans[id]; savePlans(); closeSheet(); route(); }
+function delPlan(id){ if(!confirm('Delete this success plan? This cannot be undone.')) return; delete plans[id]; savePlans(); closePlan(); }
 
 // ---- Worklist ----
 function viewWork(accts){
   const items=[];
-  accts.forEach(a=>{
-    const st=a.opps[0]?a.opps[0].stage:'';
-    if(a.dclose<=90 && EARLY.has(st)) items.push({p:1,a,label:`Renewal closes in ${a.dclose}d but still "${st}" — advance the deal`,tag:'Renewal at risk',bucket:a.dclose<=0?'overdue':'upcoming'});
-    if(a.highCases>0) items.push({p:2,a,label:`${a.highCases} high/urgent support case(s) open — coordinate resolution`,tag:'Support escalation',bucket:'overdue'});
-    const ns=nextStepOpen(a.id);
-    if(ns){
-      const overdue=nextStepOverdue(ns);
-      const isNew=ns.updatedAt && daysSince(ns.updatedAt)!=null && daysSince(ns.updatedAt)<=1;
-      items.push({p:overdue?1:2,a,label:`Next step: ${ns.text}${ns.due?` (due ${ns.due})`:''}`,tag:overdue?'Next step overdue':'Next step',bucket:overdue?'overdue':(isNew?'new':'upcoming')});
-    }
-    if(newLogo(a) && !plans[a.id]){ const ds=daysSince(a.firstPurchase); items.push({p:2,a,label:`New logo (first purchase ${a.firstPurchase}) with no success plan — generate one`,tag:'Onboard',bucket:(ds!=null&&ds<=14)?'new':'upcoming'}); }
-    if(a.sentTier==='neg') items.push({p:3,a,label:`Strained sentiment (${a.sentiment}) from support history — proactively check in`,tag:'Sentiment risk',bucket:'upcoming'});
-    if(a.tier==='atrisk' && a.renewalAmount>1e6) items.push({p:3,a,label:`At-risk account with ${fmtMoney(a.renewalAmount)} renewal — build a save play`,tag:'Save play',bucket:'upcoming'});
-    if(a.dclose<=180 && a.dclose>90 && a.tier!=='healthy') items.push({p:4,a,label:`Renewal in ${a.dclose}d, health ${a.health} — start early engagement`,tag:'Get ahead',bucket:'upcoming'});
+  const byId={}; accts.forEach(a=>byId[a.id]=a);
+  // Every account-level signal that used to be computed here ad hoc
+  // (renewal timing, open case counts, sentiment, save plays, onboarding
+  // without a plan) now fires as a real trigger through evaluateRiskTriggers
+  // and lands in engagementCtas like everything else - same record
+  // Escalations/Active CTAs themselves read, so this is a genuinely combined
+  // worklist, not a second parallel copy of the same conditions. Clicking a
+  // row opens the actual CTA/escalation detail page directly, not just the
+  // account.
+  engagementCtasFor(accts).filter(ceIsOpenOrInProgress).forEach(c=>{
+    const a=byId[c.accountId]; if(!a) return;
+    const days=ceDaysOpen(c);
+    const isEsc=c.category==='escalation';
+    const reason=RISK_TRIGGER_LABELS[c.originatingTriggerType]||'Manually opened';
+    const tag=isEsc?'Escalation':(CTA_CATEGORY_LABELS[c.category]||'CTA');
+    items.push({
+      p:isEsc?1:2, a, ctaId:c.id, tag,
+      label:`${reason} — ${days}d open`,
+      bucket:days>=14?'overdue':(days<=1?'new':'upcoming')
+    });
+  });
+  // "Next step" now comes from Success Plan milestones (the plan itself is
+  // the one real place a next step is tracked, since the old free-text
+  // activity next-step field has no input surface left) - the earliest open
+  // milestone per plan, overdue if its date has passed.
+  Object.keys(plans).forEach(acctId=>{
+    const a=byId[acctId]; if(!a) return;
+    const p=plans[acctId];
+    const open=(p.milestones||[]).filter(m=>!m.done).sort((x,y)=>(x.due||'9999')<(y.due||'9999')?-1:1);
+    const next=open[0]; if(!next) return;
+    const overdueDays=next.due?daysSince(next.due):null;
+    const isOverdue=overdueDays!=null && overdueDays>0;
+    items.push({
+      p:isOverdue?1:2, a, planId:acctId, tag:isOverdue?'Next step overdue':'Next step',
+      label:`${next.title}${next.due?` (due ${next.due})`:''}`,
+      bucket:isOverdue?'overdue':'upcoming'
+    });
   });
   items.sort((x,y)=> x.p-y.p || y.a.riskARR-x.a.riskARR);
   const overdue=items.filter(it=>it.bucket==='overdue');
   const freshItems=items.filter(it=>it.bucket==='new');
   const upcoming=items.filter(it=>it.bucket==='upcoming');
   const rows=list=>`<table><thead><tr><th>Priority action</th><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th>Health</th></tr></thead><tbody>
-    ${list.slice(0,50).map(it=>`<tr onclick="openAcct('${it.a.id}')"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b> ${stateTag(it.a)}</td><td>${ownerCell(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
+    ${list.slice(0,50).map(it=>`<tr onclick="${it.ctaId?`openEngagementCta('${it.ctaId}')`:it.planId?`openPlan('${it.planId}')`:`openAcct('${it.a.id}')`}"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b> ${stateTag(it.a)}</td><td>${ownerCell(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
     </tbody></table>`;
   const section=(title,hint,list)=> list.length?`<h3 style="margin-top:18px">${esc(title)} <span class="hint">${esc(hint)}</span></h3>${rows(list)}`:'';
   return `<div class="card"><h3>Prioritized worklist <span class="hint">${items.length} actions across scope</span></h3>
@@ -3923,11 +5173,114 @@ function viewWork(accts){
   ${items.length?'':'<p class="mini">Clear queue — nothing urgent in this scope.</p>'}</div>`;
 }
 
+// ---- Object integrations reference ----
+// A literal audit of every SOQL query in this app (see load(), loadAcctIntel,
+// evaluateRiskTriggers' data sources) - not a marketing list of "what we
+// could integrate," but what actually gets queried and where it shows up.
+// Grouped by nav icon section, plus a "Foundational" bucket for the two
+// objects (Account, User) that underpin literally every account list, and
+// an Account 360 bucket for fields only ever shown on the account detail
+// page rather than on any of the icon-rail sections themselves.
+// Every one of the 13 trigger types evaluateRiskTriggers can fire, and
+// exactly what real (or app-internal) data source causes it - the direct
+// answer to "how does Salesforce data become a visible Escalation/CTA,"
+// which the object-by-nav-section breakdown below only answered
+// inconsistently (naming some triggers, not others). Two triggers
+// (escalation_opened, onboarding_stall/onboarding_no_plan) are honestly
+// flagged as app-internal rather than Salesforce-sourced, since that's what
+// they actually are today.
+const TRIGGER_SOURCES={
+  case_blocked:{object:'Case',field:"Status='Blocked' on open cases"},
+  case_aging:{object:'Case',field:'IsAging__c on open cases'},
+  nps_csat_drop:{object:'Account',field:'NPS_Score__c < 9'},
+  escalation_opened:{object:'App-internal',field:'Started by hand (Account 360 / demo) — not Salesforce-sourced'},
+  usage_drop:{object:'ProductUsage__c',field:'AdoptionPct__c below the configured target'},
+  onboarding_stall:{object:'App-internal + Opportunity',field:'Success Plan milestone overdue vs. Opportunity first-purchase date'},
+  onboarding_no_plan:{object:'App-internal + Opportunity',field:'New logo (first-purchase Opportunity) with no plan created yet'},
+  renewal_prep_stale:{object:'Opportunity + Account (+ Contract)',field:'CloseDate approaching while Account.LastActivityDate is stale — uses Contract EndDate minus Notice Period for "days to renewal" where a Contract record is present, else falls back to Opportunity CloseDate; Contract isn\'t yet a live query (demo-modeled only)'},
+  renewal_stage_behind:{object:'Opportunity',field:'StageName still early relative to CloseDate'},
+  growth_mix_stalled:{object:'Opportunity',field:'GrowthType__c — Expansion/Transactional share of lifetime value'},
+  tap_refresh_due:{object:'OpportunityLineItem',field:'Hardware Family__c CloseDate + 2.5yr warranty mark'},
+  cadence_gap:{object:'Account',field:'LastActivityDate vs. segment-expected cadence'},
+  negative_sentiment:{object:'Case',field:'Priority/IsEscalated lifetime rate — a derived proxy, not a true Salesforce sentiment field'},
+  case_volume_spike:{object:'Case',field:`Open case COUNT >= ${RISK_CASE_VOLUME_SPIKE_THRESHOLD} (same query as case_blocked/case_aging, measuring volume instead of age/SLA)`},
+  no_exec_sponsor:{object:'Contact',field:'No contact with an Executive Sponsor role/persona — not yet a live query; no confirmed persona field on Contact in the org, demo-modeled only'},
+  qbr_overdue:{object:'Event',field:'Days since last QBR meeting past due — not yet a live query; no confirmed QBR-tracking field in the org, demo-modeled only'},
+};
+function triggerSourcesTableHtml(){
+  const rows=Object.keys(RISK_TRIGGER_LABELS).map(k=>{
+    const cust=customTriggerDef(k);
+    const src=TRIGGER_SOURCES[k]||(cust&&cust.sourceObject?{object:cust.sourceObject,field:cust.sourceField||'—'}:{object:'—',field:'—'});
+    const cat=CTA_CATEGORY_BY_TRIGGER[k];
+    const routesTo=cat==='escalation'?'Escalation':(CTA_CATEGORY_LABELS[cat]||'—')+' CTA';
+    return `<tr><td><b>${esc(RISK_TRIGGER_LABELS[k])}</b></td><td>${esc(src.object)}</td><td class="mini">${esc(src.field)}</td><td><span class="pill ${cat==='escalation'?'p-red':'p-gray'}">${esc(routesTo)}</span></td></tr>`;
+  }).join('');
+  return `<div class="card"><h3>Trigger sources <span class="hint">every trigger type, its real data source, and where it routes</span></h3>
+    <table><thead><tr><th>Trigger</th><th>Source object</th><th>Field / condition</th><th>Routes to</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
+function objectIntegrationsHtml(){
+  const catIcon=id=>{ const c=NAV_CATEGORIES.find(x=>x.id===id); return c?c.icon:''; };
+  const catLabel=id=>{ const c=NAV_CATEGORIES.find(x=>x.id===id); return c?c.label:id; };
+  const objRow=o=>`<div class="mini" style="margin-bottom:8px"><b>${esc(o.name)}</b> <span style="color:var(--muted2)">— ${esc(o.fields)}</span><br>${esc(o.note)}</div>`;
+  const foundational=[
+    {name:'Account',fields:'Name, BillingState, Segment, LastActivityDate, OwnerId',note:'The core account record every list and detail page in the app is keyed off.'},
+    {name:'Account',fields:'Industry, EmployeeCount',note:'Shown on Account 360 for context (industry, company size) — not yet a live query; demo-derived, pending confirmation these fields are populated in the org.'},
+    {name:'Opportunity',fields:'Amount, CloseDate, StageName, AccountId, OwnerId',note:'The open renewal pipeline — every account\'s renewal timing, stage, and Total Contract Value comes from here.'},
+    {name:'User',fields:'Name, Title, ManagerId',note:'Owner attribution (every "Owner" column/avatar) and the org hierarchy walk behind CSM scoping.'},
+    {name:'Contract',fields:'EndDate, Notice Period',note:'Sharpens renewal-prep timing to a real "days to renewal" calc where present — not yet a live query; demo-modeled only, falls back to Opportunity CloseDate otherwise.'},
+    {name:'Contact',fields:'Executive Sponsor persona/role',note:'Feeds the no_exec_sponsor risk trigger — not yet a live query; demo-modeled only.'},
+    {name:'Event',fields:'QBR meeting date',note:'Feeds the qbr_overdue risk trigger — not yet a live query; demo-modeled only.'},
+  ];
+  const sections=[
+    ['pulse',[
+      {name:'Account',fields:'NPS_Score__c, SurveyDate__c',note:'Biannual NPS survey score and date, per account.'},
+      {name:'ProductUsage__c',fields:'AdoptionPct__c, SeatsLicensed__c, SeatsActive__c, UsageTrendPct__c, CommissionTarget__c, CommissionAttained__c, LastUsageSync__c',note:'Product-analytics export (Snowflake/Sigma, not native Salesforce) — the only thing powering Usage & Adoption.'},
+    ]],
+    ['risk',[
+      {name:'Case',fields:"Priority, IsEscalated, Status='Blocked', IsAging__c, open COUNT",note:'Drives the case_blocked/case_aging/case_volume_spike escalation triggers and the health score\'s case penalty.'},
+      {name:'Opportunity',fields:'GrowthType__c (won deals)',note:'Feeds the growth_mix_stalled trigger.'},
+      {name:'OpportunityLineItem',fields:'Family__c (hardware families), CloseDate',note:'TAP hardware-refresh due-date calculation.'},
+      {name:'ProductUsage__c',fields:'AdoptionPct__c',note:'Feeds the usage_drop trigger.'},
+    ]],
+    ['engagement',[
+      {name:'Case',fields:'Priority, IsEscalated',note:'Same case signals, surfaced on the Escalation checklist once case_blocked/case_aging fires.'},
+    ]],
+    ['cockpit',[
+      {name:'Opportunity',fields:'Amount, CloseDate, StageName',note:'Top risk-weighted accounts and renewal readiness on Command Center.'},
+    ]],
+    ['performance',[
+      {name:'Opportunity',fields:'GrowthType__c, Amount (won)',note:'CSM growth metrics — organic/renewal, expansion, transactional.'},
+      {name:'User',fields:'ManagerId chain',note:'Org hierarchy walk behind each CSM\'s profile page.'},
+    ]],
+  ];
+  const acct360=[
+    {name:'Opportunity',fields:'Amount, CloseDate, StageName (won deals)',note:'Purchase history & lifetime value card.'},
+    {name:'OpportunityLineItem',fields:'Product2.Family, Product2.Name, TotalPrice, Quantity',note:'Products purchased card.'},
+    {name:'Case',fields:'Priority, IsEscalated (lifetime counts)',note:'Customer sentiment card — a derived proxy, not a true Salesforce sentiment field.'},
+  ];
+  return `<div class="card"><h3>Object integrations <span class="hint">every Salesforce object this app actually reads, grouped by where it shows up</span></h3>
+    <p class="mini" style="margin-bottom:10px">Foundational — read everywhere an account or owner appears:</p>
+    ${foundational.map(objRow).join('')}
+    <div class="disco-grid" style="margin-top:14px">
+      ${sections.map(([catId,objs])=>`<div class="disco-field">
+        <label class="mini" style="font-weight:700;color:var(--ink);display:flex;align-items:center;gap:6px;margin-bottom:6px"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${catIcon(catId)}</svg>${esc(catLabel(catId))}</label>
+        ${objs.map(objRow).join('')}
+      </div>`).join('')}
+      <div class="disco-field">
+        <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:6px">Account 360 <span class="hint">opened from any account list</span></label>
+        ${acct360.map(objRow).join('')}
+      </div>
+    </div>
+  </div>`;
+}
 // ---- Health model ----
 function viewModel(accts){
   const sl=(k,l,max)=>`<div class="slider"><label>${l}</label><input type="range" min="0" max="${max}" step="1" value="${WEIGHTS[k]}" oninput="setWeight('${k}',this.value,this)"><span id="w_${k}">${WEIGHTS[k]}</span></div>`;
   const r=rollup(accts);
-  return `<div class="card callout"><h3 style="border:none;margin:0 0 8px">A note on health scores</h3>
+  return `${orgConfigSlotSwitcherHtml()}
+  ${orgConfigChatHtml()}
+  <div class="card callout"><h3 style="border:none;margin:0 0 8px">A note on health scores <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
   <p class="mini" style="line-height:1.7">"I'm not a fan of health scores... health scores are not what they're cracked up to be." A single 0–100 number is easy to game and easy to misread — it's kept here for continuity and as one input among several, but it is intentionally <b>not</b> the headline metric anymore. The Home and Command Center views now lead with engagement, growth and customer insights instead. Use this tab to tune the score if it's still useful to your team, or largely ignore it in favor of the CSM Scorecard, Case Watch and Engagement tabs.</p>
   </div>
   <div class="card"><h3>Health-score model</h3>
@@ -3939,11 +5292,20 @@ function viewModel(accts){
   ${sl('stageRisk','Near renewal, early stage',30)}
   ${sl('engage','Stale engagement (no touch 90d+)',30)}
   <div style="margin-top:14px" class="row-actions"><button class="btn primary" onclick="saveWeights()">Save model</button><button class="btn" onclick="resetWeights()">Reset defaults</button></div>
-  <p class="mini" style="margin-top:14px">Current scope re-scored: <b>${r.green}</b> healthy · <b>${r.amber}</b> watch · <b>${r.red}</b> at risk · avg <b>${r.health}</b>.</p>
+  <p class="mini" style="margin-top:14px">Current scope re-scored: <b>${r.green}</b> healthy · <b>${r.amber}</b> watch · <b>${r.red}</b> at risk · avg <b>${r.health==null?'—':r.health}</b>.</p>
   <p class="mini" style="margin-top:10px;color:var(--muted)">Note: sentiment and CSAT are computed separately and are not affected by these health weights.</p>
-  </div>`;
+  </div>
+  <div class="card"><h3>Adoption thresholds <span class="hint">what counts as adopting vs. not, used on Usage &amp; Adoption</span></h3>
+    <div class="row-actions" style="margin-top:8px;flex-wrap:wrap;gap:14px">
+      <label class="mini">"Adopting" at/above %<br><input type="number" min="0" max="100" value="${adoptionCfg.adoptingPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('adoptingPct',this.value)"></label>
+      <label class="mini">"Not adopting" below %<br><input type="number" min="0" max="100" value="${adoptionCfg.atRiskPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('atRiskPct',this.value)"></label>
+    </div>
+  </div>
+  ${riskWeightsPanelHtml()}
+  ${triggerSourcesTableHtml()}
+  ${objectIntegrationsHtml()}`;
 }
-function setWeight(k,v,el){ WEIGHTS[k]=+v; document.getElementById('w_'+k).textContent=v; computeAll(); const p=el.closest('.card').querySelectorAll('.mini'); const r=rollup(accountsUnder(STATE.scope)); if(p.length) p[p.length-2].innerHTML=`Current scope re-scored: <b>${r.green}</b> healthy · <b>${r.amber}</b> watch · <b>${r.red}</b> at risk · avg <b>${r.health}</b>.`; }
+function setWeight(k,v,el){ WEIGHTS[k]=+v; document.getElementById('w_'+k).textContent=v; computeAll(); const p=el.closest('.card').querySelectorAll('.mini'); const r=rollup(riskTest10?STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name)):accountsUnder(STATE.scope)); if(p.length) p[p.length-2].innerHTML=`Current scope re-scored: <b>${r.green}</b> healthy · <b>${r.amber}</b> watch · <b>${r.red}</b> at risk · avg <b>${r.health==null?'—':r.health}</b>.`; }
 function saveWeights(){ LS.set('weights',WEIGHTS); toast('Model saved — applies every time you open this dashboard.'); }
 function resetWeights(){ WEIGHTS=Object.assign({},DEFAULT_WEIGHTS); LS.set('weights',WEIGHTS); computeAll(); route(); }
 
@@ -4138,7 +5500,7 @@ function targetBar(pct){ const p=Math.max(0,Math.min(100,Math.round(pct||0))); c
 // (csmMetrics/csmImproveSteps/csmStaleWork) so this is the same underlying
 // data, just given a real page instead of a drawer, plus the CSM's own book
 // of accounts underneath so it reads as a genuine profile, not just a report.
-function openCsmProfile(name){ currentAcctView=null; currentEngagementCtaId=null; currentCsmView=name; route(); window.scrollTo(0,0); }
+function openCsmProfile(name){ currentAcctView=null; currentEngagementCtaId=null; currentPredictiveAcctId=null; currentPlanAcctId=null; currentPlanMilestone=null; currentCsmView=name; route(); window.scrollTo(0,0); }
 function closeCsmProfile(){ currentCsmView=null; route(); window.scrollTo(0,0); }
 function renderCsmProfilePage(){
   $('#scopebar').style.display='none';
@@ -4193,28 +5555,19 @@ function csmProfilePageHtml(name){
 }
 function viewScorecard(accts){
   const rows=csmMetrics(accts).map(o=>{ o.steps=csmImproveSteps(o); o.needsImprove=csmNeedsImprove(o); return o; });
-  const needing=rows.filter(o=>o.needsImprove);
-  return `<div class="card"><h3>CSM</h3>
-  <p class="mini" style="line-height:1.7">Customer insights, engagement rate, and growth — split into <b>organic/renewal</b>, <b>expansion</b> (net-new product attach) and <b>transactional</b> (more of what they already have) — rather than one lump health score. Targets below are editable and apply to every CSM; progress bars show actual vs. target.</p>
-  <div class="row-actions" style="margin:12px 0 4px;flex-wrap:wrap;gap:14px">
-    <label class="mini">Engagement target %<br><input type="number" min="0" max="100" value="${scoreTargets.engagementPct}" style="width:70px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setTarget('engagementPct',this.value)"></label>
-    <label class="mini">Growth target $ / CSM<br><input type="number" min="0" step="5000" value="${scoreTargets.growthPerCsm}" style="width:110px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setTarget('growthPerCsm',this.value)"></label>
-    <label class="mini">Insights target / CSM (90d)<br><input type="number" min="0" value="${scoreTargets.insightsPerCsm}" style="width:70px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setTarget('insightsPerCsm',this.value)"></label>
-  </div></div>
-
-  ${surveyCoverageCard(accts)}
-
-  ${needing.length?`<div class="card"><h3>Reps needing attention <span class="hint">${needing.length} below target — top action for each</span></h3>
-  <div class="improve-list">${needing.map(o=>{ const top=o.steps[0]; return `<div class="improve-step ${top.sev}">
-    <div class="improve-meta">${avatarChip(o.name)} <b>${esc(o.name)}</b><div class="mini" style="margin-top:4px">${o.steps.length} step${o.steps.length===1?'':'s'}</div></div>
-    <div class="improve-body"><span class="pill ${top.sev==='high'?'p-red':top.sev==='med'?'p-amber':'p-gray'}">${esc(top.metric)}</span> <b>${esc(top.title)}</b>
-      <div class="row-actions" style="margin-top:8px">
-        <button class="btn primary sm" onclick="runCsmImproveAction('${attrStr(o.name)}','${attrStr(top.action)}')">${esc(top.btn)}</button>
-        <button class="btn sm" onclick="openCsmImprove('${attrStr(o.name)}')">Full improve plan</button>
-      </div>
-    </div>
-  </div>`; }).join('')}</div>
-  </div>`:''}
+  const totalGrowth=rows.reduce((s,o)=>s+o.growthTotal,0);
+  const avgEngagement=rows.length?Math.round(rows.reduce((s,o)=>s+o.engagementPct,0)/rows.length):0;
+  const sentimented=accts.filter(a=>a.sentiment!=null);
+  const avgSentiment=sentimented.length?Math.round(sentimented.reduce((s,a)=>s+a.sentiment,0)/sentimented.length):null;
+  return `<div class="card"><h3>CSM <span class="sortbar">${ceTest10ToggleHtml()}${riskTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()" title="Pull the latest NPS/CSAT survey responses and re-evaluate triggers">↻ Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():''}</span>`:''}</span></h3>
+  <div class="kpis" style="margin:14px 0">
+    <div class="kpi"><div class="l">CSMs</div><div class="v">${rows.length}</div><div class="d">in scope</div></div>
+    <div class="kpi"><div class="l">Accounts</div><div class="v">${accts.length}</div><div class="d">across all CSMs</div></div>
+    <div class="kpi"><div class="l">Avg engagement</div><div class="v">${avgEngagement}%</div><div class="d">in cadence</div></div>
+    <div class="kpi"><div class="l">Avg sentiment</div><div class="v" style="color:${avgSentiment==null?'var(--muted)':avgSentiment>=70?'var(--green)':avgSentiment>=45?'var(--amber)':'var(--red)'}">${avgSentiment==null?'—':avgSentiment}</div><div class="d">support-derived</div></div>
+    <div class="kpi"><div class="l">Total growth</div><div class="v">${fmtMoney(totalGrowth)}</div><div class="d">renewal + expansion + transactional</div></div>
+  </div>
+  </div>
 
   <div class="card"><h3>All CSMs in scope</h3>
   <table><thead><tr><th>CSM</th><th class="num">Accounts</th><th class="num">Engagement</th><th class="num">Insights (90d)</th><th class="num">NPS</th><th class="num">Renewal (organic)</th><th class="num">Expansion</th><th class="num">Transactional</th><th class="num">Total growth</th><th class="num">Overdue</th><th></th></tr></thead><tbody>
@@ -4295,7 +5648,8 @@ function ceTest10ToggleHtml(){
   // obvious, mid-demo, that this screen is in fact reading live off the risk
   // board rather than some stale snapshot.
   const refreshBtn = riskTest10 ? `<button type="button" class="btn sm" onclick="route()" title="Re-pull the latest state from Accounts & Risk">↻ Refresh from Test 10</button>` : '';
-  return `${refreshBtn}<button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setRiskTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book':'Test 10 only'}</button>`;
+  const resetBtn = riskTest10 ? `<button type="button" class="btn sm" onclick="resetTest10Demo()" title="Clear every CTA/escalation/plan for the 10 pilot accounts and re-blank NPS/health">⟲ Reset demo</button>` : '';
+  return `${refreshBtn}${resetBtn}<button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setRiskTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book':'Test 10 only'}</button>`;
 }
 // What actually caused each item - the same originatingTriggerType recorded
 // the moment fireTriggerWithCta/ensureEscalationCta created the record, i.e.
@@ -4351,8 +5705,7 @@ function ensureCtasForLiveTriggers(scopedAccts,allowedTypes){
       ? engagementCtas.some(c=>c.accountId===t.accountId && c.category==='escalation')
       : engagementCtas.some(c=>c.accountId===t.accountId && c.originatingTriggerType===t.triggerType);
     if(hasAny) return;
-    if(category==='escalation'){ ensureEscalationCta(t.accountId,t.triggerType); }
-    else { autoCreateCtaForNewTrigger(byId[t.accountId],t.triggerType,t.recommendedAction); }
+    autoCreateCtaForNewTrigger(byId[t.accountId],t.triggerType,t.recommendedAction);
     created=true;
   });
   if(created) saveEngagementCtas();
@@ -4442,6 +5795,183 @@ function viewActiveCtas(accts){
   </div>
   <div class="card" id="ceListAnchor">${filterLabel?`<div class="mini" style="margin-bottom:8px">Showing only <b>${esc(filterLabel)}</b> — <a href="#" onclick="clearCtaFilters();return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></div>`:''}${sorted.length?`<div class="risk-col-body" style="padding:0">${sorted.map(c=>ceKanbanCardHtml(c,byId[c.accountId])).join('')}</div>`:`<div style="text-align:center;padding:36px 0"><p class="mini">No active CTAs — clear queue.</p></div>`}</div>
   <div class="card" id="ceCtaResolvedAnchor"><h3>Resolved <span class="hint">most recent first</span></h3>${ceSentHistoryHtml(ctaDone,scopedAccts)}</div>`;
+}
+// Predictive Insights: an analysis tool, not an email workflow - every
+// account in scope is listed here; clicking in and generating an insight
+// reviews that account's own history, compares it to similar accounts, and
+// proposes a forward-looking relationship timeline. Landing tab of the
+// Customer Success Journey category.
+function setPredictiveYear(y){ setGlobalQYear(y); }
+function setPredictiveQ(q){ setGlobalQQ(q); }
+function viewPredictive(accts){
+  const scopedAccts = riskTest10 ? STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name)) : accts;
+  const sel=globalQSel||defaultQSel();
+  const qKey=quarterKeyOf(sel);
+  const generated=scopedAccts.filter(a=>predictiveInsightFor(a.id,qKey));
+  const rows=[...scopedAccts].sort((x,y)=>x.name.localeCompare(y.name));
+  return `<div class="card"><h3>Predictive Insights <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
+    <p class="mini">Analyzes an account's own history and similar accounts to propose a forward-looking relationship timeline — no risk trigger, no problem signal, no email to send.</p>
+    ${quarterToggleHtml(sel,'setPredictiveYear','setPredictiveQ')}
+    <div class="kpis" style="margin-top:6px">
+      <div class="kpi"><div class="l">Accounts in scope</div><div class="v">${scopedAccts.length}</div><div class="d">available for analysis</div></div>
+      <div class="kpi risk-green"><div class="l">Insights generated</div><div class="v">${generated.length}</div><div class="d">${sel.year} Q${sel.q}</div></div>
+    </div>
+  </div>
+  <div class="card"><div class="risk-col-body" style="padding:0">${rows.map(a=>predictiveAcctRowHtml(a,qKey)).join('')}</div></div>`;
+}
+function predictiveAcctRowHtml(a,qKey){
+  const ins=predictiveInsightFor(a.id,qKey);
+  return `<div class="risk-card" style="cursor:pointer" onclick="openPredictiveInsight('${a.id}')">
+    <div class="risk-card-hd">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</b>
+        ${ins?'<span class="pill p-green">Insight generated</span>':'<span class="pill p-gray">Not yet analyzed</span>'}
+      </div>
+    </div>
+    <div class="risk-card-badges">
+      <span class="pill p-gray">${esc(engagementDescriptorLine(a))}</span>
+      ${ins?`<span class="pill p-gray">generated ${esc(fmtDate(ins.generatedAt))}</span>`:''}
+    </div>
+  </div>`;
+}
+// Full page (same pattern as Account 360/CSM profile - a dedicated page with
+// a "← Back" button, not a #sheet overlay or the CTA chevron stepper).
+let currentPredictiveAcctId = null;
+function openPredictiveInsight(acctId){ currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; currentPlanAcctId=null; currentPlanMilestone=null; currentPredictiveAcctId=acctId; route(); window.scrollTo(0,0); }
+function closePredictiveInsight(){ currentPredictiveAcctId=null; route(); window.scrollTo(0,0); }
+function renderPredictiveInsightPage(){
+  const a=STATE.accounts.find(x=>x.id===currentPredictiveAcctId);
+  if(!a){ currentPredictiveAcctId=null; route(); return; }
+  $('#scopebar').style.display='none';
+  $('#app').innerHTML=predictiveInsightPageHtml(a);
+}
+// Test10 accounts: real human-in-the-loop AI generation, same hand-off
+// pattern as ai_drafts (backend/data/predictive_insights/) - the backend
+// embeds the account's own "Test10 background and current info for {name}"
+// file content into the request, plus a live summary of its most recent
+// trigger event, so a Claude Code session drafting the insight has both the
+// fabricated history AND the account's actual current state to work from.
+// Every other real account keeps the fast local deterministic generator.
+function predictiveRecentEventSummary(a){
+  const live=triggerEvents.filter(t=>t.accountId===a.id && isTriggerLive(t)).sort((x,y)=>new Date(y.firedAt)-new Date(x.firedAt))[0];
+  if(live) return `Currently has an open ${RISK_TRIGGER_LABELS[live.triggerType]||live.triggerType} (${CTA_CATEGORY_BY_TRIGGER[live.triggerType]==='escalation'?'routed to Escalations':'routed to Active CTAs'}), status: ${live.status}.`;
+  const resolved=triggerEvents.filter(t=>t.accountId===a.id && t.resolution).sort((x,y)=>new Date(y.resolution.at)-new Date(x.resolution.at))[0];
+  if(resolved) return `Most recently, a ${RISK_TRIGGER_LABELS[resolved.triggerType]||resolved.triggerType} was resolved on ${fmtDate(resolved.resolution.at)} (outcome: ${resolved.resolution.outcome}).`;
+  return 'No recent trigger activity on file for this account.';
+}
+function requestPredictiveInsight(acctId){
+  const a=STATE.accounts.find(x=>x.id===acctId); if(!a) return;
+  const qKey=quarterKeyOf(globalQSel||defaultQSel());
+  if(!isTest10Account(acctId)){ generatePredictiveInsight(acctId,qKey); route(); return; }
+  const requestId='pins_'+acctId+'_'+qKey.replace('-','');
+  const btn=$('#predictiveGenBtn'), statusEl=$('#predictiveGenStatus');
+  if(btn){ btn.disabled=true; btn.textContent='Requesting…'; }
+  fetch('/api/predictive-insight/'+requestId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountName:a.name,quarter:qKey,recentEventSummary:predictiveRecentEventSummary(a)})})
+    .then(r=>{ if(!r.ok) throw new Error(); return r.json(); })
+    .then(()=>{ if(statusEl) statusEl.textContent='Waiting on a predictive insight — ask Claude Code to "process pending predictive insights".'; pollPredictiveInsight(requestId,acctId,qKey,0); })
+    .catch(()=>{ toast('Could not request a predictive insight.'); if(btn){ btn.disabled=false; btn.textContent='Generate predictive insight'; } });
+}
+function pollPredictiveInsight(requestId,acctId,qKey,attempt){
+  if(attempt>240) return; // ~20 minutes at 5s intervals, then give up quietly
+  fetch('/api/predictive-insight/'+requestId).then(r=>r.json()).then(d=>{
+    if(d.status==='ready' && d.insight){
+      const a=STATE.accounts.find(x=>x.id===acctId);
+      // The model only ever produces the relationship-building steps - the
+      // active-risk-signal step (if any) is always prepended here, same
+      // deterministic logic as the local generator, never left to the model.
+      if(a && Array.isArray(d.insight.timeline)) d.insight.timeline=[...predictiveRiskStepFor(a),...d.insight.timeline];
+      predictiveInsights[predictiveKey(acctId,qKey)]=Object.assign({quarter:qKey,generatedAt:new Date().toISOString()},d.insight);
+      savePredictiveInsights();
+      route();
+    }else{
+      setTimeout(()=>pollPredictiveInsight(requestId,acctId,qKey,attempt+1),5000);
+    }
+  }).catch(()=>setTimeout(()=>pollPredictiveInsight(requestId,acctId,qKey,attempt+1),5000));
+}
+function predictiveInsightPageHtml(a){
+  const sel=globalQSel||defaultQSel();
+  const qKey=quarterKeyOf(sel);
+  const ins=predictiveInsightFor(a.id,qKey);
+  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(a.name)}</h2>
+    <div class="mini">${esc(engagementDescriptorLine(a))}</div></div>
+    <button class="btn sm" onclick="closePredictiveInsight()">← Back</button></div></div>
+  <div class="bd">
+    <div class="card" style="box-shadow:none;margin:0 0 16px">${quarterToggleHtml(sel,'setPredictiveYear','setPredictiveQ')}</div>
+    ${!ins?`<div class="card" style="text-align:center;padding:36px 0">
+      <p class="mini" style="margin-bottom:12px">No predictive insight generated yet for ${sel.year} Q${sel.q}.</p>
+      <button type="button" class="btn primary" id="predictiveGenBtn" onclick="requestPredictiveInsight('${a.id}')">Generate predictive insight</button>
+      <div id="predictiveGenStatus" class="mini" style="margin-top:8px;color:var(--muted2)"></div>
+    </div>`:`
+    <div class="card" style="box-shadow:none;margin:0 0 16px;border:1px solid var(--violet)">
+      <h4 style="margin:0 0 8px">Review of the past</h4>
+      <p class="mini">${esc(ins.pastReview)}</p>
+    </div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px;border:1px solid var(--violet)">
+      <h4 style="margin:0 0 8px">This account</h4>
+      <p class="mini">${esc(ins.analysis)}</p>
+    </div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px;border:1px solid var(--violet)">
+      <h4 style="margin:0 0 8px">Similar cases</h4>
+      ${ins.similar.length?ins.similar.map(s=>`<p class="mini">• <b>${esc(s.name)}</b> — ${esc(s.note)}</p>`).join(''):'<p class="mini">No comparable accounts on file.</p>'}
+    </div>
+    <div class="card" style="box-shadow:none;margin:0 0 16px;border:1px solid var(--violet)">
+      <h4 style="margin:0 0 8px">Proposed timeline <span class="hint">${sel.year} Q${sel.q}</span></h4>
+      <div class="timeline">${ins.timeline.map(t=>`<div class="timeline-entry"><div class="mini" style="font-weight:700">${esc(t.when)} — ${esc(t.action)} ${t.impliesEngagement?'<span class="pill p-blue">Engagement</span>':t.emailTemplate?'<span class="pill p-red">Email</span>':'<span class="pill p-gray">Internal</span>'}</div><div class="mini">${esc(t.detail)}</div></div>`).join('')}</div>
+      <p class="mini" style="margin-top:8px">Adding this to the Success Plan turns each step into a clickable timeline node there — blue jumps to the account's active escalation/CTA, red jumps to an email draft, black opens step details.</p>
+      <div class="row-actions" style="margin-top:10px">
+        <button type="button" class="btn sm" onclick="addPredictiveTimelineToPlan('${a.id}')">Add timeline to Success Plan</button>
+        <button type="button" class="btn sm" id="predictiveGenBtn" onclick="requestPredictiveInsight('${a.id}')">Regenerate</button>
+      </div>
+      <div id="predictiveGenStatus" class="mini" style="margin-top:6px;color:var(--muted2)"></div>
+    </div>`}
+  </div>`;
+}
+// The concrete "connects the parts of Journey together" link: pushes the
+// proposed timeline straight into a real Success Plan as milestones, reusing
+// the exact same plans/generatePlan/savePlans store Success Plans is built on.
+// Uses whichever quarter is currently selected on the Predictive Insights
+// page, so a plan built from a past quarter's insight is possible too.
+function addPredictiveTimelineToPlan(acctId){
+  const qKey=quarterKeyOf(globalQSel||defaultQSel());
+  const ins=predictiveInsightFor(acctId,qKey); if(!ins) return;
+  if(!plans[acctId]) generatePlan(acctId);
+  const base=new Date();
+  ins.timeline.forEach((t,i)=>{
+    const resources=t.impliesEngagement?[{kind:'engagement',id:acctId}]:t.emailTemplate?[{kind:'email',id:t.emailTemplate}]:[];
+    const due=t.impliesEngagement?sfDate(base):sfDate(new Date(base.getTime()+(i+1)*21*864e5));
+    plans[acctId].milestones.push({id:cid(),title:t.action,detail:t.detail,note:'',resources,due,done:false,source:'predictive'});
+  });
+  savePlans();
+  closePredictiveInsight();
+  setTab('plans');
+  openPlan(acctId);
+}
+// Customer Success Emails: same automated pattern as Customer Contact
+// Insights (contactLogEntries/viewGong) - a read-only matrix built from
+// whatever was actually sent, not a manual compose/log-a-reply page. Scoped
+// to just the relationship-building emails the Predictive/Success-Plan flow
+// sends (source==='journey' on emailDrafts, tagged in sendPlanMilestoneEmail), so
+// this is a filtered slice of the same automatic record, not a second
+// parallel logging mechanism.
+function viewCsEmails(accts){
+  const idSet=new Set(accts.map(a=>a.id));
+  const rows=emailDrafts.filter(h=>h.source==='journey' && (!h.acctId||idSet.has(h.acctId)))
+    .map(h=>({t:h.t,acctId:h.acctId,acctName:h.acctName,direction:'sent',audience:h.audience,subject:h.subject,snippet:h.snippet||'',contact:h.to||'',stage:h.stage||h.templateName||''}))
+    .sort((a,b)=>new Date(b.t)-new Date(a.t));
+  const last30=rows.filter(r=>r.t && (Date.now()-new Date(r.t).getTime())<=30*864e5).length;
+  const acctsCovered=new Set(rows.map(r=>r.acctId).filter(Boolean)).size;
+  return `<div class="card"><h3>Customer Success Emails <span class="hint">relationship-building emails sent via Predictive Insights / Success Plans</span></h3>
+    <div class="kpis" style="margin:14px 0">
+      <div class="kpi clickable" onclick="scrollToSection('csEmailMatrix')"><div class="l">Total sent</div><div class="v">${rows.length}</div><div class="d">this cadence only</div></div>
+      <div class="kpi clickable" onclick="scrollToSection('csEmailMatrix')"><div class="l">Logged last 30 days</div><div class="v">${last30}</div><div class="d">recent activity</div></div>
+      <div class="kpi clickable" onclick="scrollToSection('csEmailMatrix')"><div class="l">Accounts covered</div><div class="v">${acctsCovered}</div><div class="d">of ${accts.length} in scope</div></div>
+    </div>
+  </div>
+  <div class="card" id="csEmailMatrix"><h3>Contact matrix</h3>
+    ${rows.length?`<div style="overflow-x:auto"><table class="matrix-table"><thead><tr><th>Timestamp</th><th>Account</th><th>Direction</th><th>Audience</th><th>Subject</th><th>Snippet</th><th>Contact</th><th>Stage</th></tr></thead><tbody>
+    ${rows.slice(0,200).map(r=>`<tr ${r.acctId?`onclick="openAcct('${r.acctId}')" style="cursor:pointer"`:''}><td class="mini">${r.t?esc(new Date(r.t).toLocaleString()):'—'}</td><td><b>${esc(r.acctName||'—')}</b></td><td><span class="pill p-blue">Sent</span></td><td><span class="pill ${r.audience==='customer'?'p-blue':'p-amber'}">${esc(r.audience||'—')}</span></td><td class="mini">${esc(r.subject||'—')}</td><td class="mini" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.snippet||'')}">${esc(r.snippet||'—')}</td><td class="mini">${esc(r.contact||'—')}</td><td class="mini">${esc(r.stage||'—')}</td></tr>`).join('')}
+    </tbody></table></div>`:'<p class="mini">No relationship-building emails sent yet.</p>'}
+  </div>`;
 }
 // Sent history reads as its own dated timeline (same visual language as the
 // CTA detail view below and the A&R kanban card) rather than a flat table -
@@ -4635,6 +6165,9 @@ function openEngagementCta(ctaId){
   const c=engagementCtas.find(x=>x.id===ctaId); if(!c) return;
   currentAcctView=null;
   currentCsmView=null;
+  currentPredictiveAcctId=null;
+  currentPlanAcctId=null;
+  currentPlanMilestone=null;
   currentEngagementCtaId=ctaId;
   ceExpandedStepId=null;
   route();
@@ -4704,15 +6237,22 @@ function ctaStepIsDone(s){ return s.type==='email' ? !!s.sent : !!s.done; }
 // scheduled) stacked in one slot instead of in the main horizontal line -
 // they're order-independent parallel tracks, not a strict sequence, so nether
 // one visually blocks the other before the final "Problem resolved" step.
+// 'current' turns into 'reading' the moment the backend reply-watch poller
+// finds a matching reply and starts actively interpreting it (see
+// pollReplyWatch/c.replyReading) - a real interim state between "waiting on
+// a reply" and "resolved," instead of the chevron silently jumping straight
+// to fully done once the (sometimes multi-second) AI interpretation finishes.
 function ctaStepperHtml(c){
   const isBranch=CTA_BRANCH_CATEGORIES.includes(c.category) && c.steps.length===4;
   const done=c.steps.filter(ctaStepIsDone).length;
   let expandedIdx=c.steps.findIndex(s=>s.id===ceExpandedStepId);
+  const reading=!!c.replyReading;
   const chevron=(s,i,cls)=>{
     const sDone=ctaStepIsDone(s);
-    const label=s.label==='Email drafted'?'Email sent':s.label;
+    const isReading=cls==='reading';
+    const label=isReading?'Reading reply…':(s.label==='Email drafted'?'Email sent':s.label);
     const marker=sDone?`<span class="ce-step-marker" title="Completed ${esc(fmtDate(s.doneAt||s.sentAt))}"></span>`:'';
-    return `<div class="ce-step ${cls}${i===expandedIdx?' active':''}" onclick="ceToggleStepPanel('${s.id}')" title="${esc(label)}">${marker}${esc(label)}</div>`;
+    return `<div class="ce-step ${cls}${i===expandedIdx?' active':''}" onclick="ceToggleStepPanel('${s.id}')" title="${isReading?'Reply detected — interpreting it now':esc(label)}">${marker}${esc(label)}</div>`;
   };
   let stepperInner, firstOpenIdx;
   if(isBranch){
@@ -4723,11 +6263,12 @@ function ctaStepperHtml(c){
     // sends, independently of each other; step 3 only goes current once
     // BOTH of them are done.
     const emailDone=ctaStepIsDone(c.steps[0]), salesDone=ctaStepIsDone(c.steps[1]), meetingDone=ctaStepIsDone(c.steps[2]), resolvedDone=ctaStepIsDone(c.steps[3]);
+    const curCls=reading?'reading':'current';
     const cls=[
-      emailDone?'done':'current',
-      salesDone?'done':(emailDone?'current':'pending-locked'),
-      meetingDone?'done':(emailDone?'current':'pending-locked'),
-      resolvedDone?'done':((salesDone&&meetingDone)?'current':'pending-locked'),
+      emailDone?'done':curCls,
+      salesDone?'done':(emailDone?curCls:'pending-locked'),
+      meetingDone?'done':(emailDone?curCls:'pending-locked'),
+      resolvedDone?'done':((salesDone&&meetingDone)?curCls:'pending-locked'),
     ];
     firstOpenIdx = !emailDone?0 : !salesDone?1 : !meetingDone?2 : !resolvedDone?3 : -1;
     if(expandedIdx<0) expandedIdx=firstOpenIdx;
@@ -4735,9 +6276,9 @@ function ctaStepperHtml(c){
   } else {
     firstOpenIdx=c.steps.findIndex(s=>!ctaStepIsDone(s));
     if(expandedIdx<0) expandedIdx=firstOpenIdx;
-    stepperInner=c.steps.map((s,i)=>chevron(s,i,ctaStepIsDone(s)?'done':(i===firstOpenIdx?'current':'pending-locked'))).join('');
+    stepperInner=c.steps.map((s,i)=>chevron(s,i,ctaStepIsDone(s)?'done':(i===firstOpenIdx?(reading?'reading':'current'):'pending-locked'))).join('');
   }
-  return `<div class="mini" style="margin-bottom:2px">${done} of ${c.steps.length} steps complete · click any step to work it or review it${isBranch?' · loop-in and meeting run in parallel, either order':''}</div>
+  return `<div class="mini" style="margin-bottom:2px">${done} of ${c.steps.length} steps complete · click any step to work it or review it${isBranch?' · loop-in and meeting run in parallel, either order':''}${reading?' · <b style="color:var(--amber)">reading the customer\'s reply now…</b>':''}</div>
   <div class="ce-stepper${isBranch?' ce-stepper-branch':''}" id="ceStepper">${stepperInner}</div>
   ${expandedIdx>=0?ctaStepPanelHtml(c,expandedIdx,c.steps[expandedIdx]):''}`;
 }
@@ -5126,8 +6667,10 @@ function sendEscStepEmail(acctId,stepId,stepIdx){
   LS.set('escState',escState);
   const a=STATE.accounts.find(x=>x.id===acctId);
   const audience=ESC_STEP_AUDIENCE[stepIdx]||'customer';
-  emailDrafts.unshift({id:cid(),t:new Date().toISOString(),action:'sent',templateId:'escalation_step',templateName:'Escalation — '+s.label,audience,acctId,acctName:a?a.name:'',subject,to:recipient,snippet:emailSnippet(bodyText)});
+  const escCta=engagementCtas.find(x=>x.accountId===acctId && x.category==='escalation');
+  emailDrafts.unshift({id:cid(),t:new Date().toISOString(),action:'sent',templateId:'escalation_step',templateName:'Escalation — '+s.label,audience,acctId,acctName:a?a.name:'',subject,to:recipient,snippet:emailSnippet(bodyText),ctaId:escCta?escCta.id:null,stage:s.label});
   emailDrafts=emailDrafts.slice(0,40); saveEmailDrafts();
+  if(audience==='customer') sendTest10DemoEmail(acctId,subject,bodyText);
   if(audience==='customer' && a){
     pushActivityEntry(acctId,'Email',subject,'Sent as part of escalation step: '+s.label);
     syncLastActFromActivity(acctId);
@@ -5218,17 +6761,12 @@ function viewUsage(accts){
     ['Commission attainment',commAttain==null?'—':commAttain+'%',fmtMoney(attSum)+' of '+fmtMoney(targSum),null],
   ];
   return `<div class="card"><h3>Usage &amp; Adoption</h3>
-  <p class="mini" style="line-height:1.7">What counts as <b>adopting vs. not</b> is editable below.</p>
-  <div class="row-actions" style="margin:12px 0 4px;flex-wrap:wrap;gap:14px">
-    <label class="mini">"Adopting" at/above %<br><input type="number" min="0" max="100" value="${adoptionCfg.adoptingPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('adoptingPct',this.value)"></label>
-    <label class="mini">"Not adopting" below %<br><input type="number" min="0" max="100" value="${adoptionCfg.atRiskPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('atRiskPct',this.value)"></label>
-    ${noData?`<span class="mini" style="align-self:flex-end;color:var(--muted)">${noData} account${noData===1?'':'s'} not yet in the usage export</span>`:''}
-  </div>
+  ${noData?`<p class="mini" style="color:var(--muted)">${noData} account${noData===1?'':'s'} not yet in the usage export</p>`:''}
   <div class="kpis" style="margin:14px 0 0">${kpis.map(k=>`<div class="kpi${k[3]?' clickable':''}${/Not adopting/.test(k[0])?' accent':''}${usageKpiFilter===k[3]&&k[3]?' selected':''}"${k[3]?` onclick="setUsageKpi('${k[3]}')"`:''}><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div></div>
   <div class="card"><h3>Accounts by adoption <span class="hint">lowest adoption first${usageKpiFilter?' · filtered':''}</span></h3>
   <div class="searchbar"><input id="usearch" placeholder="Filter accounts…" oninput="filterTable(this,'utbl')"></div>
-  <table id="utbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th class="num">Adoption</th><th class="num">Active / Licensed</th><th class="num">Trend</th><th class="num">To goal</th><th class="num">Synced</th></tr></thead><tbody>
-  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${segmentPill(a)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
+  <table id="utbl"><thead><tr><th>Account</th><th>Owner</th><th class="num">Adoption</th><th class="num">Active / Licensed</th><th class="num">Trend</th><th class="num">To goal</th><th class="num">Synced</th></tr></thead><tbody>
+  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
   </tbody></table>
   ${sorted.length?'':'<p class="mini">No accounts with usage data match this filter.</p>'}
   <p class="mini" style="margin-top:12px;color:var(--muted)">Source: product-analytics Snowflake → Sigma, modeled as a periodic export. Swap in the live connection later — nothing above needs to change since it reads the same <code>ProductUsage__c</code> shape.</p>
@@ -5484,7 +7022,7 @@ function usageCard(a){
 // Opening an account is a real page, not a modal — it renders into #app
 // alongside the normal icon-rail/flyout nav, at the same width as any other
 // tab, rather than floating in the .sheet overlay used by TAP/Plan/etc.
-function openAcct(id){ currentAcctView=id; currentEngagementCtaId=null; currentCsmView=null; route(); window.scrollTo(0,0); }
+function openAcct(id){ currentAcctView=id; currentEngagementCtaId=null; currentCsmView=null; currentPredictiveAcctId=null; currentPlanAcctId=null; currentPlanMilestone=null; route(); window.scrollTo(0,0); }
 function closeAcctView(){ currentAcctView=null; route(); window.scrollTo(0,0); }
 function renderAcctPage(){
   const a=STATE.accounts.find(x=>x.id===currentAcctView);
@@ -5504,7 +7042,7 @@ function acctPageHtml(a){
   const resolvedRate = a.lifeCases>0 ? Math.round((a.lifeCases-a.openCases)/a.lifeCases*100) : null;
   const sentColor = a.sentiment==null?'var(--muted)':a.sentTier==='pos'?'var(--green)':a.sentTier==='neu'?'var(--amber)':'var(--red)';
   const hasPlan=!!plans[id];
-  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)} ${opportunityPill(a)}</div></div><button class="btn sm" onclick="closeAcctView()">← Back</button></div></div>
+  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)} ${opportunityPill(a)}${a.industry?' · '+esc(a.industry)+(a.employeeCount?' · ~'+a.employeeCount.toLocaleString()+' employees':''):''}</div></div><button class="btn sm" onclick="closeAcctView()">← Back</button></div></div>
   <div class="bd">
     <div class="row-actions" style="margin-bottom:16px">
       <button type="button" class="btn" onclick="viewEngagementForAccount('${a.id}')">View Engagement</button>
@@ -5512,9 +7050,9 @@ function acctPageHtml(a){
       <button type="button" class="btn primary" onclick="createOrOpenPlan('${a.id}')">${hasPlan?'View Success Plan':'Create Success Plan'}</button>
     </div>
     <div class="kpis" style="margin-bottom:16px">
-      <div class="kpi"><div class="l">Health</div><div class="v" style="color:${a.health>=75?'var(--green)':a.health>=50?'var(--amber)':'var(--red)'}">${a.health}</div><div class="d">${tierPill(a.tier)}</div></div>
+      <div class="kpi"><div class="l">Health</div><div class="v" style="color:${a.health==null?'var(--muted)':a.health>=75?'var(--green)':a.health>=50?'var(--amber)':'var(--red)'}">${a.health==null?'—':a.health}</div><div class="d">${tierPill(a.tier)}</div></div>
       <div class="kpi"><div class="l">CSAT</div><div class="v" style="color:${csatColor(c.v)}">${c.v==null?'—':c.v+'%'}</div><div class="d">${c.v==null?'no data':csatFace(c.v)+(c.src==='placeholder'?' · placeholder':' · set by CSM')}</div></div>
-      <div class="kpi"><div class="l">NPS</div><div class="v" style="color:${a.nps==null?'var(--muted)':a.nps>=9?'var(--green)':a.nps>=7?'var(--amber)':'var(--red)'}">${a.nps==null?'—':a.nps+'/10'}</div><div class="d">${a.nps==null?'no survey response':npsClassify(a.nps)+(a.npsDate?' · '+esc(a.npsDate):'')}</div></div>
+      <div class="kpi"><div class="l">NPS</div><div class="v" style="color:${a.nps==null?'var(--muted)':a.nps>=9?'var(--green)':a.nps>=7?'var(--amber)':'var(--red)'}">${a.nps==null?'—':a.nps+'/10'}</div><div class="d">${a.nps==null?'no survey response':npsClassify(a.nps)+(a.npsDate?' · '+esc(a.npsDate):'')}${orgFeatureFlags.npsTrend&&a.npsHistory?' · trend '+a.npsHistory.map(h=>h.score).join('→'):''}</div></div>
       <div class="kpi"><div class="l">Sentiment</div><div class="v" style="color:${sentColor}">${a.sentiment==null?'—':a.sentiment}</div><div class="d">${sentPill(a)}</div></div>
       <div class="kpi"><div class="l">Annualized revenue</div><div class="v">${fmtMoney(a.ltv)}</div><div class="d">${a.pastDeals} closed-won deals</div></div>
       <div class="kpi"><div class="l">Total Contract Value</div><div class="v">${fmtMoney(a.renewalAmount)}</div><div class="d">${a.dclose>9000?'—':'closes in '+a.dclose+' days'}</div></div>
@@ -5529,6 +7067,8 @@ function acctPageHtml(a){
     <div class="full">${usageCard(a)}</div>
 
     <div class="full">${teamRosterCard(a)}</div>
+
+    ${orgFeatureFlags.productLineScorecard?`<div class="full">${productScorecardCardHtml(a)}</div>`:''}
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Customer satisfaction (CSAT)</h3>
       <div class="csat-wrap">
@@ -5642,14 +7182,6 @@ function saveEmailDrafts(){ LS.set('emailDrafts',emailDrafts); }
 let emailCompose = null; // {templateId,acctId,audience,to,cc,subject,body,confirmed}
 let emailAudienceFilter = 'all'; // all | customer | internal
 let emailTplMenuOpen = false;
-// Set by requestTriggerAction when a risk-board recommended action opens this
-// composer - once the CSM actually confirms sending (emailRecordDraft), that's
-// what moves the originating trigger to pending, not the act of drafting.
-let emailComposeTriggerId = null;
-// The CTA record requestTriggerAction eagerly created for this composer
-// session - emailRecordDraft updates this exact record on send rather than
-// creating a second one.
-let emailComposeCtaId = null;
 function toggleEmailTplMenu(force){
   emailTplMenuOpen = force==null ? !emailTplMenuOpen : !!force;
   const menu=$('#emailTplMenu'), btn=$('#emailTplBtn');
@@ -5674,6 +7206,22 @@ Are you available for 30 minutes next week? Happy to work around your calendar.
 
 Protect Life,
 ${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_onboarding_nudge',audience:'customer',name:'Onboarding milestone nudge',desc:'Check in when an onboarding milestone has slipped - mid-rollout, not a first kickoff.',
+    suggest:a=>newLogo(a)&&!!plans[a.id],
+    fill:ctx=>emailFillCustomer(ctx,`Keeping ${ctx.accountName}'s onboarding on track`,
+`Hi ${ctx.greetingName},
+
+Checking in on where things stand with onboarding — [milestone] looks like it slipped past its target date, and I want to make sure nothing's blocking your team.
+
+Could we grab 20 minutes to:
+• Confirm what's still needed on both sides
+• Reset a realistic date if the original one no longer works
+• Clear any blockers before the next milestone comes up
+
+What's your availability this week?
+
+Thanks,
+${ctx.csmName}${ctx.csmTitle}`)},
   {id:'cust_renewal',audience:'customer',name:'Renewal heads-up',desc:'Value recap as renewal approaches.',
     suggest:a=>a.dclose<=120&&a.dclose>0,
     fill:ctx=>emailFillCustomer(ctx,`${ctx.accountName} renewal — let's align ahead of ${ctx.renewalLabel}`,
@@ -5692,15 +7240,15 @@ Thanks,
 ${ctx.csmName}${ctx.csmTitle}`)},
   {id:'cust_tap',audience:'customer',name:'TAP refresh',desc:'Hardware warranty refresh outreach.',
     suggest:a=>a.tapStatus==='overdue'||a.tapStatus==='duesoon',
-    fill:ctx=>emailFillCustomer(ctx,`TAP / hardware refresh for ${ctx.accountName}`,
+    fill:ctx=>emailFillCustomer(ctx,`TAP / hardware refresh for ${ctx.accountName} — ~${ctx.tapMonthsAway} month${ctx.tapMonthsAway===1?'':'s'} out`,
 `Hi ${ctx.greetingName},
 
-I'm checking in on your TAP / hardware refresh for ${ctx.accountName}${ctx.tapLabel?` (${ctx.tapLabel})`:''}.
+Our records show ${ctx.accountName}'s TAP (hardware warranty) refresh window opening in about ${ctx.tapMonthsAway} month${ctx.tapMonthsAway===1?'':'s'}${ctx.tapLabel?` (currently tracking as ${ctx.tapLabel})`:''}.
 
-Refreshing on schedule protects warranty coverage and keeps devices in a supported state. I can walk through:
-• What's due and recommended next steps
-• Timing that minimizes operational impact
-• Any RMAs or logistics we should line up now
+Getting ahead of it now protects warranty coverage and keeps devices in a supported state. I'd like to walk through:
+• Exact unit counts and models due for refresh
+• Timing that minimizes operational impact for your team
+• Any RMAs or logistics we should line up now, well before the window opens
 
 Can we book 20 minutes this week to lock a plan?
 
@@ -5758,6 +7306,38 @@ Sharing a short update that may help ${ctx.accountName} get more value from the 
 If useful, I can also pull a light usage snapshot and suggest 1–2 next steps.
 
 Open to a brief sync?
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_expansion',audience:'customer',name:'Cross-sell / expansion',desc:'Proactive pitch when an established account has never expanded.',
+    suggest:a=>{ const g=a.growth||{}; const attach=a.ltv>0?((g.Expansion||0)+(g.Transactional||0))/a.ltv:0; return (a.pastDeals||0)>=2 && attach<0.05; },
+    fill:ctx=>emailFillCustomer(ctx,`Growing with ${ctx.accountName}`,
+`Hi ${ctx.greetingName},
+
+You've been a valued partner, and I don't think we've properly explored where else Axon could help ${ctx.accountName} beyond what you're using today.
+
+I'd like to walk through:
+• Other teams or use cases at ${ctx.accountName} that might benefit
+• Product lines we haven't discussed yet
+• What a pilot or expansion could look like, on your timeline
+
+Worth 20 minutes to explore, no pressure either way?
+
+Thanks,
+${ctx.csmName}${ctx.csmTitle}`)},
+  {id:'cust_checkin',audience:'customer',name:'Overdue check-in',desc:'Proactive outreach when it has been too long since the last touch - not a post-meeting recap.',
+    suggest:a=>a.dsAct!=null&&a.dsAct>(a.expectedCadenceDays||60),
+    fill:ctx=>emailFillCustomer(ctx,`Checking in — it's been a while, ${ctx.accountName}`,
+`Hi ${ctx.greetingName},
+
+It's been a bit since we last connected, and I wanted to check in before too much time goes by.
+
+Quick things I'd love to cover:
+• How things are going day-to-day
+• Anything blocking your team right now
+• Whether there's a better regular cadence for us going forward
+
+Do you have 20 minutes in the next week or two?
+
+Best,
 ${ctx.csmName}${ctx.csmTitle}`)},
   {id:'cust_followup',audience:'customer',name:'Meeting follow-up',desc:'Recap + next steps after a call.',
     suggest:()=>false,
@@ -5897,10 +7477,19 @@ function emailCtx(a){
     if(a.tier==='atrisk') riskBits.push('account is at-risk on health');
     if(a.highCases) riskBits.push(`${a.highCases} high/urgent case(s)`);
     if(a.casesBlocked) riskBits.push(`${a.casesBlocked} blocked case(s)`);
+    if(a.casesAging) riskBits.push(`${a.casesAging} aging case(s)`);
     if(a.nps!=null&&a.nps<=6) riskBits.push(`NPS ${a.nps}/10`);
+    if(a.sentTier==='neg') riskBits.push('strained sentiment from support history');
     if(a.dsAct!=null&&a.dsAct>90) riskBits.push(`${a.dsAct}d since last touch`);
+    if(a.openCases>=RISK_CASE_VOLUME_SPIKE_THRESHOLD) riskBits.push(`${a.openCases} open cases (volume spike)`);
+    if(a.hasExecSponsor===false) riskBits.push('no executive sponsor on file');
   }
   const tapLabel=a&&a.tapStatus==='overdue'?'overdue':a&&a.tapStatus==='duesoon'?'due within 90 days':'';
+  // Fabricated but deterministic (per-account, not re-randomized every draft) -
+  // a concrete "N months away" detail for TAP outreach, independent of the
+  // real tapStatus field so a manually-simulated tap_refresh_due trigger still
+  // gets a specific, crafted number rather than a generic label.
+  const tapMonthsAway = a ? 1+(hashStr(a.id)%6) : null;
   return {
     accountName:a?a.name:'[Account]',
     csmName, csmTitle, csmEmail:'',
@@ -5915,7 +7504,7 @@ function emailCtx(a){
     readiness:a&&a.readiness!=null?a.readiness:a?readinessScore(a):null,
     segment:a?(a.segment||a.bookSegment||'—'):'—',
     riskBits:riskBits.join('; '),
-    tapLabel,
+    tapLabel, tapMonthsAway,
     suggestWindow:'early next week',
   };
 }
@@ -5927,7 +7516,7 @@ function buildEmailDraft(templateId,acctId){
   const filled=tpl.fill(emailCtx(a));
   return {
     templateId:tpl.id, audience:tpl.audience, acctId:acctId||'',
-    to:filled.to||'', cc:filled.cc||'', subject:filled.subject||'', body:filled.body||'',
+    to:isTest10Account(acctId)?TEST10_DEMO_INBOX:(filled.to||''), cc:filled.cc||'', subject:filled.subject||'', body:filled.body||'',
     confirmed:false, aiRequestId:'email_'+cid()
   };
 }
@@ -6033,57 +7622,22 @@ function emailRecordDraft(action){
     templateId:emailCompose.templateId, templateName:tpl?tpl.name:emailCompose.templateId,
     audience:emailCompose.audience, acctId:emailCompose.acctId||'',
     acctName:a?a.name:'', subject:emailCompose.subject, to:emailCompose.to,
-    snippet:emailSnippet(emailCompose.body)
+    snippet:emailSnippet(emailCompose.body), source:emailCompose.source||'outreach',
+    ctaId:null, stage:tpl?tpl.name:''
   });
   emailDrafts=emailDrafts.slice(0,40);
   saveEmailDrafts();
+  // Test10 only - everywhere else this app deliberately never sends mail
+  // itself (review yourself, then copy/open in your own client); Test10
+  // accounts are the one sandboxed exception so the whole demo chain works
+  // end to end against a real inbox.
+  sendTest10DemoEmail(emailCompose.acctId,emailCompose.subject,emailCompose.body);
   // Also log a light activity touch on the account when customer-facing, and
   // write it back to Salesforce the same way a manually-logged call/email is.
   if(emailCompose.audience==='customer'&&emailCompose.acctId){
     pushActivityEntry(emailCompose.acctId,'Email',emailCompose.subject||'(draft prepared)',`Prepared via Email Outreach (${action}) — sent manually by CSM after review.`);
     syncLastActFromActivity(emailCompose.acctId);
     if(a){ try{ scoreAccount(a); }catch(e){} }
-  }
-  // If this draft was opened from a risk-board recommended action, actually
-  // confirming the send (not just opening the composer) is what moves that
-  // trigger to pending AND is what actually fires the real underlying side
-  // effect (opening the escalation, creating the CTA) - nothing happens on
-  // the mere click, only once the email genuinely goes out.
-  if(emailComposeTriggerId){
-    const t=triggerEvents.find(x=>x.id===emailComposeTriggerId);
-    if(t){
-      let sideNote='';
-      if(t.recommendedAction==='escalate_to_support_lead' || t.recommendedAction==='review_escalation'){
-        setEscStatus(t.accountId,'Open');
-        markEscAckStepDone(t.accountId,emailCompose.subject,emailCompose.body,emailCompose.to);
-        sideNote='Escalation opened. ';
-      }else if(t.recommendedAction==='schedule_tap_refresh'){
-        const acct=STATE.accounts.find(x=>x.id===t.accountId);
-        if(acct) ctas.push({id:cid(),type:'CS Request',acctId:acct.id,name:acct.name,priority:'High',due:sfDate(new Date(Date.now()+7*864e5)),title:'Schedule TAP refresh — '+(RISK_TRIGGER_LABELS[t.triggerType]||t.triggerType),status:'Open',source:'Auto',createdAt:new Date().toISOString()});
-        saveCtas();
-        sideNote='CTA created. ';
-      }
-      t.status='pending';
-      t.actionNote={label:RISK_ACTION_LABELS[t.recommendedAction]||'Email sent',at:new Date().toISOString(),note:`${sideNote}Email sent to ${emailCompose.to||'recipient'} — "${emailCompose.subject||''}"`};
-      saveTriggerEvents();
-      // Every risk-board action is itself a CTA, so sending it also surfaces
-      // here in Client Engagement (Escalations tab for escalation-category
-      // actions, Sent history for the rest) - not a disconnected parallel flow.
-      // Reuses the CTA requestTriggerAction already eagerly created for this
-      // composer session (emailComposeCtaId) rather than creating a second one -
-      // that eager-create is what makes the CTA show up as an open row the
-      // moment the action was taken, not only once the email is actually sent.
-      const category=CTA_CATEGORY_BY_TRIGGER[t.triggerType]||'manual';
-      const engC=(emailComposeCtaId && engagementCtas.find(x=>x.id===emailComposeCtaId))
-        || (category==='escalation' ? ensureEscalationCta(t.accountId,t.triggerType) : createEngagementCta(t.accountId,category,t.triggerType));
-      engC.originatingTriggerType=t.triggerType;
-      engC.steps[0].subject=emailCompose.subject||''; engC.steps[0].body=emailCompose.body||''; engC.steps[0].recipient=emailCompose.to||'';
-      engC.steps[0].sent=true; engC.steps[0].sentAt=new Date().toISOString();
-      engC.status=engagementCtaEffectiveStatus(engC);
-      saveEngagementCtas();
-    }
-    emailComposeTriggerId=null;
-    emailComposeCtaId=null;
   }
   route();
 }
@@ -6237,8 +7791,8 @@ renderNav();
 Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWeights,resetWeights,filterTable,toggleComm,setTab,
   setEscStatus,
   setEscReason,setEscProduct,toggleEscStep,
-  setCsat,generateAllNewLogos,createOrOpenPlan,openPlan,setPlanObjectives,setPlanNotes,togglePlanMs,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
-  openPlanStep,setStepDetail,setStepNote,togglePlanStepDone,addStepResource,addStepResourceFromPicker,removeStepResource,planStepEmail,openTalkTrack,copyTalkTrack,regenPlanAs,
+  setCsat,createOrOpenPlan,openPlan,closePlan,setPlanObjectives,setPlanNotes,togglePlanMs,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
+  openPlanMilestoneNode,openPlanMilestonePage,closePlanMilestone,setStepDetail,setStepNote,togglePlanStepDone,addStepResource,addStepResourceFromPicker,removeStepResource,sendPlanMilestoneEmail,requestAiDraftForPlanMilestone,openTalkTrack,copyTalkTrack,regenPlanAs,
   setOwnerFilter,quickCta,
   addInsight,delResource,submitResource,setTarget,setAdoptionCfg,setUsageKpi,
   logActivity,delActivity,saveNextStep,clearNextStep,

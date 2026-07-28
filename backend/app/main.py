@@ -6,6 +6,7 @@ reading mock data or live Salesforce data.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -23,7 +24,8 @@ from .config import settings
 from .mock_engine import run_mock_query
 from .salesforce_client import SalesforceUnavailable, run_salesforce_create, run_salesforce_query
 from .sheets_client import SheetsUnavailable, fetch_survey_responses
-from .gmail_client import GmailUnavailable, gmail_configured, send_email
+from .gmail_client import GmailUnavailable, gmail_configured, get_message_body, list_recent_inbox, send_email
+from .ai_client import answer_org_config_chat, draft_email, generate_predictive_insight, interpret_reply
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 # AI-drafted-email hand-off files (see backend/app/main.py's ai-draft endpoints
@@ -32,6 +34,23 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 # Code-in-the-loop feature rather than a live API integration.
 AI_DRAFTS_DIR = BACKEND_DIR / "data" / "ai_drafts"
 AI_DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
+# Same human-in-the-loop hand-off pattern as ai_drafts, just inverted: the
+# frontend registers "this CTA is waiting on a reply" here when its email is
+# sent, then polls. A live Claude Code session (with real Gmail read access
+# now that gmail_client's OAuth token has the readonly scope) checks the
+# inbox via /api/gmail/inbox + /api/gmail/message/{id}, decides whether the
+# reply means the CTA is resolved, and writes that decision back into the
+# same file - which is what actually "auto-completes" the chevron chain.
+REPLY_WATCH_DIR = BACKEND_DIR / "data" / "reply_watch"
+REPLY_WATCH_DIR.mkdir(parents=True, exist_ok=True)
+# Same human-in-the-loop pattern again, for Predictive Insights: the backend
+# embeds the account's own "Test10 background and current info for {name}"
+# file (in the project root) directly into the pending request, so whichever
+# Claude Code session fulfills it has the fabricated history right there
+# without a separate file lookup.
+PREDICTIVE_INSIGHTS_DIR = BACKEND_DIR / "data" / "predictive_insights"
+PREDICTIVE_INSIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_ROOT = BACKEND_DIR.parent
 TEST10_ACCOUNTS = [
     "Springfield Fire & Rescue", "Union City Correctional Facility", "Zionsville Highway Patrol",
     "Kingsley Fire & Rescue", "Westgate Correctional Facility", "Harborview Fire & Rescue",
@@ -83,6 +102,25 @@ class AiDraftRequest(BaseModel):
     accountName: str
     category: str
     context: str
+
+
+class ReplyWatchRequest(BaseModel):
+    accountName: str
+    ctaId: str
+    sentSubject: str
+    sentAt: str
+
+
+class PredictiveInsightRequest(BaseModel):
+    accountName: str
+    quarter: str
+    recentEventSummary: str
+
+
+class OrgConfigChatRequest(BaseModel):
+    message: str
+    currentConfig: str  # JSON string - the active bundle, so the model proposes a diff not a rewrite
+    history: list = []  # prior turns [{role, text, diff}] - makes this a continuous conversation, not one-shot
 
 
 def require_auth(request: Request) -> dict:
@@ -246,15 +284,16 @@ def _ai_draft_path(request_id: str) -> Path:
 
 @app.post("/api/ai-draft/{request_id}")
 def create_ai_draft_request(request_id: str, body: AiDraftRequest, user: dict = Depends(require_auth)):
-    """Writes a small hand-off file for a human-in-the-loop AI draft: a CSM
-    clicks "Create AI draft" in the browser, which lands here; a Claude Code
-    session (not this backend - no LLM API key is configured) reads pending
-    files under backend/data/ai_drafts/ and writes the drafted subject/body
-    back into the same file, which the frontend then polls for. Deliberately
-    limited to the 10 NPS/CSAT pilot accounts while this stays manual/demo.
-    """
+    """A CSM clicks "Create AI draft," optionally typing extra context first;
+    that context is combined with the account's own background file and sent
+    to the real model, which drafts the email itself. If ANTHROPIC_API_KEY
+    isn't set, falls back to the human-in-the-loop hand-off (a Claude Code
+    session reads this same pending file and writes the draft back).
+    Deliberately limited to the 10 NPS/CSAT pilot accounts."""
     if body.accountName not in TEST10_ACCOUNTS:
         raise HTTPException(status_code=403, detail="AI drafts are limited to the 10 pilot accounts for now")
+    ctx_path = PROJECT_ROOT / f"Test10 background and current info for {body.accountName}.md"
+    background_text = ctx_path.read_text() if ctx_path.is_file() else ""
     path = _ai_draft_path(request_id)
     data = {
         "status": "pending",
@@ -265,6 +304,13 @@ def create_ai_draft_request(request_id: str, body: AiDraftRequest, user: dict = 
         "context": body.context,
         "draft": None,
     }
+    if settings.anthropic_configured:
+        try:
+            data["draft"] = draft_email(body.accountName, body.category, body.context, background_text)
+            data["status"] = "ready"
+        except Exception as e:  # noqa: BLE001
+            data["status"] = "pending"
+            data["error"] = f"AI drafting failed, falling back to manual: {e}"
     path.write_text(json.dumps(data, indent=2))
     return data
 
@@ -275,6 +321,219 @@ def get_ai_draft_request(request_id: str, user: dict = Depends(require_auth)):
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     return json.loads(path.read_text())
+
+
+@app.get("/api/gmail/inbox")
+def gmail_inbox(max_results: int = 15, user: dict = Depends(require_auth)):
+    """Raw recent-inbox read - for a live Claude Code session to call directly
+    (curl) while attending the Test10 demo, to find a reply to match against
+    an open reply-watch. Not used by the frontend UI itself."""
+    if not gmail_configured():
+        raise HTTPException(status_code=503, detail="Gmail not configured - run backend/gmail_auth.py once.")
+    try:
+        return {"messages": list_recent_inbox(max_results)}
+    except GmailUnavailable as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get("/api/gmail/message/{message_id}")
+def gmail_message(message_id: str, user: dict = Depends(require_auth)):
+    if not gmail_configured():
+        raise HTTPException(status_code=503, detail="Gmail not configured - run backend/gmail_auth.py once.")
+    try:
+        return {"body": get_message_body(message_id)}
+    except GmailUnavailable as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+def _reply_watch_path(cta_id: str) -> Path:
+    if not _AI_REQUEST_ID_RE.match(cta_id):
+        raise HTTPException(status_code=400, detail="Invalid CTA id")
+    return REPLY_WATCH_DIR / f"{cta_id}.json"
+
+
+@app.post("/api/reply-watch/{cta_id}")
+def create_reply_watch(cta_id: str, body: ReplyWatchRequest, user: dict = Depends(require_auth)):
+    if body.accountName not in TEST10_ACCOUNTS:
+        raise HTTPException(status_code=403, detail="Reply watching is limited to the 10 pilot accounts for now")
+    path = _reply_watch_path(cta_id)
+    data = {
+        "status": "pending",
+        "requestedAt": datetime.now(timezone.utc).isoformat(),
+        "accountName": body.accountName,
+        "ctaId": body.ctaId,
+        "sentSubject": body.sentSubject,
+        "sentAt": body.sentAt,
+        "replySnippet": None,
+        "note": None,
+    }
+    path.write_text(json.dumps(data, indent=2))
+    return data
+
+
+@app.get("/api/reply-watch/{cta_id}")
+def get_reply_watch(cta_id: str, user: dict = Depends(require_auth)):
+    path = _reply_watch_path(cta_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return json.loads(path.read_text())
+
+
+async def _reply_watch_poll_once():
+    """One pass over every pending reply-watch file: pulls the inbox once
+    (not once per file), matches by subject (Re:/Fwd: stripped), and - only
+    when ANTHROPIC_API_KEY is set - asks the model whether the reply actually
+    means the CTA is resolved before marking it ready. No key configured =
+    no automatic decision here; the file just waits for the manual
+    Claude-Code-in-the-loop path instead."""
+    if not gmail_configured():
+        return
+    pending = []
+    for f in REPLY_WATCH_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+        except Exception:  # noqa: BLE001
+            continue
+        if data.get("status") == "pending":
+            pending.append((f, data))
+    if not pending:
+        return
+    try:
+        inbox = list_recent_inbox(20)
+    except GmailUnavailable:
+        return
+    for f, data in pending:
+        sent_subject = re.sub(r"^(re|fwd):\s*", "", (data.get("sentSubject") or ""), flags=re.I).strip().lower()
+        if not sent_subject:
+            continue
+        match = None
+        for m in inbox:
+            subj = re.sub(r"^(re|fwd):\s*", "", m.get("subject") or "", flags=re.I).strip().lower()
+            if subj and sent_subject in subj:
+                match = m
+                break
+        if not match:
+            continue
+        try:
+            body = get_message_body(match["id"])
+        except GmailUnavailable:
+            continue
+        if settings.anthropic_configured:
+            # Flip to "reading" the instant a matching reply is found, before
+            # the (real, sometimes multi-second) interpret_reply call below -
+            # gives the frontend poll something to actually observe in
+            # between "waiting for a reply" and "resolved", so a CSM watching
+            # the chevron sees a real interim state instead of a blind jump.
+            data["status"] = "reading"
+            f.write_text(json.dumps(data, indent=2))
+            try:
+                decision = interpret_reply(data.get("accountName", ""), data.get("sentSubject", ""), body)
+            except Exception as e:  # noqa: BLE001
+                decision = {"resolved": False, "note": f"(AI interpretation failed: {e})"}
+        else:
+            # No model configured - can't judge intent automatically, leave pending for the manual path.
+            continue
+        if decision.get("resolved"):
+            data["status"] = "ready"
+            data["note"] = decision.get("note", "")
+            data["replySnippet"] = match.get("snippet", "")
+            f.write_text(json.dumps(data, indent=2))
+        else:
+            # Not resolved yet (e.g. reply didn't actually confirm) - back to
+            # pending so the next pass can re-check without getting stuck
+            # showing "reading" forever.
+            data["status"] = "pending"
+            f.write_text(json.dumps(data, indent=2))
+
+
+async def _reply_watch_poller_loop():
+    while True:
+        try:
+            await _reply_watch_poll_once()
+        except Exception:  # noqa: BLE001
+            pass  # best-effort background loop - never let one bad pass kill it
+        await asyncio.sleep(30)
+
+
+@app.on_event("startup")
+async def _start_reply_watch_poller():
+    asyncio.create_task(_reply_watch_poller_loop())
+
+
+def _predictive_insight_path(request_id: str) -> Path:
+    if not _AI_REQUEST_ID_RE.match(request_id):
+        raise HTTPException(status_code=400, detail="Invalid request id")
+    return PREDICTIVE_INSIGHTS_DIR / f"{request_id}.json"
+
+
+@app.post("/api/predictive-insight/{request_id}")
+def create_predictive_insight_request(request_id: str, body: PredictiveInsightRequest, user: dict = Depends(require_auth)):
+    """Reads the account's own context file straight off disk (project root)
+    and, if ANTHROPIC_API_KEY is set, calls the real model synchronously and
+    returns the finished insight immediately - no waiting on anyone. Without a
+    key configured, falls back to the human-in-the-loop hand-off: a Claude
+    Code session reads this same pending file and writes the insight back."""
+    if body.accountName not in TEST10_ACCOUNTS:
+        raise HTTPException(status_code=403, detail="Predictive insights are limited to the 10 pilot accounts for now")
+    ctx_path = PROJECT_ROOT / f"Test10 background and current info for {body.accountName}.md"
+    context_text = ctx_path.read_text() if ctx_path.is_file() else ""
+    path = _predictive_insight_path(request_id)
+    data = {
+        "status": "pending",
+        "requestedAt": datetime.now(timezone.utc).isoformat(),
+        "requestedBy": user["username"],
+        "accountName": body.accountName,
+        "quarter": body.quarter,
+        "recentEventSummary": body.recentEventSummary,
+        "contextFile": str(ctx_path),
+        "contextText": context_text,
+        "insight": None,
+    }
+    if settings.anthropic_configured:
+        try:
+            data["insight"] = generate_predictive_insight(body.accountName, context_text, body.recentEventSummary)
+            data["status"] = "ready"
+        except Exception as e:  # noqa: BLE001
+            data["status"] = "pending"
+            data["error"] = f"AI generation failed, falling back to manual: {e}"
+    path.write_text(json.dumps(data, indent=2))
+    return data
+
+
+@app.get("/api/predictive-insight/{request_id}")
+def get_predictive_insight_request(request_id: str, user: dict = Depends(require_auth)):
+    path = _predictive_insight_path(request_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return json.loads(path.read_text())
+
+
+ORG_CONFIGS_DIR = PROJECT_ROOT / "org_configs"
+
+
+def _load_org_docs() -> dict:
+    docs = {}
+    if ORG_CONFIGS_DIR.is_dir():
+        for f in sorted(ORG_CONFIGS_DIR.glob("org_ref_*.md")):
+            docs[f.stem.replace("org_ref_", "")] = f.read_text()
+    return docs
+
+
+@app.post("/api/org-config-chat")
+def org_config_chat(body: OrgConfigChatRequest, user: dict = Depends(require_auth)):
+    """Configure Org Data's chat feature - real, synchronous Claude call.
+    Combines the CSM's request with all 5 org reference docs and the
+    currently active config, and gets back a diff strictly in the existing
+    config shape (or an honest "doesn't fit" explanation)."""
+    if not settings.anthropic_configured:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set in backend/.env - this feature needs a real model call, there's no manual fallback for it.")
+    org_docs = _load_org_docs()
+    if not org_docs:
+        raise HTTPException(status_code=404, detail=f"No org_ref_*.md files found in {ORG_CONFIGS_DIR}")
+    try:
+        return answer_org_config_chat(body.message, body.currentConfig, org_docs, body.history)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Chat request failed: {e}") from e
 
 
 if FRONTEND_ASSETS_DIR.exists():
