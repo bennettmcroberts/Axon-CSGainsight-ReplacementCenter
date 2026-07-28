@@ -29,6 +29,12 @@ class Settings:
         self.sf_security_token = _clean(os.getenv("SF_SECURITY_TOKEN"))
         # "login" for production/dev orgs, "test" for sandboxes, or a My Domain prefix.
         self.sf_domain = _clean(os.getenv("SF_DOMAIN")) or "login"
+        self.sfk_account = _clean(os.getenv("SNOWFLAKE_ACCOUNT"))
+        self.sfk_user = _clean(os.getenv("SNOWFLAKE_USER"))
+        self.sfk_password = _clean(os.getenv("SNOWFLAKE_PASSWORD"))
+        self.sfk_warehouse = _clean(os.getenv("SNOWFLAKE_WAREHOUSE"))
+        self.sfk_role = _clean(os.getenv("SNOWFLAKE_ROLE"))
+        self.sfk_database = _clean(os.getenv("SNOWFLAKE_DATABASE")) or "MART_CUSTOMER_SUCCESS_PROD"
         self.mock_seed = int(os.getenv("MOCK_SEED", "42"))
         self.mock_account_count = int(os.getenv("MOCK_ACCOUNT_COUNT", "64"))
         self.port = int(os.getenv("PORT", "8420"))
@@ -63,9 +69,15 @@ class Settings:
         return bool(self.anthropic_api_key)
 
     @property
+    def snowflake_configured(self) -> bool:
+        return bool(self.sfk_account and self.sfk_user and self.sfk_password and self.sfk_warehouse)
+
+    @property
     def effective_mode(self) -> str:
-        """Falls back to mock data if Salesforce mode is requested but not configured."""
+        """Falls back to mock data if the requested mode isn't actually configured."""
         if self.data_mode == "salesforce" and not self.salesforce_configured:
+            return "mock"
+        if self.data_mode == "hybrid" and not (self.salesforce_configured or self.snowflake_configured):
             return "mock"
         return self.data_mode
 

@@ -334,17 +334,25 @@ stakeholder-conflict framework this doc already uses.
 
 The mock engine invents a few fields that don't exist in a stock Salesforce org. If
 you flip `DATA_MODE=salesforce`, these queries will return nothing until equivalent
-fields/logic exist on the real org (see `README.md` for where each query is built):
+fields/logic exist on the real org (see `README.md` for where each query is built).
 
-| Mock field | Used for | Real-org equivalent needed |
+**Update:** `DATA_MODE=hybrid` (see `backend/app/hybrid_engine.py`) resolves most of
+these by routing each query shape to whichever real source actually has it — the
+`MART_CUSTOMER_SUCCESS_PROD` Snowflake mart for renewals/segment/deal-LTV/blocked
+cases, and raw Salesforce (with a couple of field-name rewrites) for org chain,
+open cases, Task/Event, and TAP/line-item breakdowns. Only four gaps remain, where
+neither source has real data yet:
+
+| Mock field | Used for | Status under `DATA_MODE=hybrid` |
 |---|---|---|
-| `Account.Segment` (`Segment__c`) | Engagement cadence tier, CSM Scorecard | An existing tiering field (e.g. `Account.AccountType__c`), or a new picklist |
-| `Case.Status='Blocked'` | Case Watch — blocked cases | An existing case status value, or a new checkbox `IsBlocked__c` |
-| `Case.IsAging__c` | Case Watch — aging cases | Derive from `Case.CreatedDate` age instead of a stored flag — this app models it as a boolean for simplicity |
-| `Opportunity.GrowthType__c` | Growth mix (Renewal/Expansion/Transactional), CSM Scorecard growth columns | No Salesforce standard equivalent — would need a new picklist field on won Opportunities, or a derivation rule (e.g. compare product families across an account's deal history) |
-| `Account.NPS_Score__c` / `SurveyDate__c` | NPS on Home, Overview, CSM Scorecard, Account 360 | Per Leana: this is real today, sourced from the biannual NPS survey's existing Salesforce report (or Nova Sales Snowflake) — needs the report's underlying object/fields identified and queried instead of this placeholder shape |
-| `OpportunityLineItem.Family__c` (flat field, standing in for a `Product2.Family` join filtered to hardware families) | TAP Refreshes tab — earliest hardware purchase date, used to compute the 2.5yr refresh / 5yr contract-end dates | `Product2.Family IN (...)` already works today per-account (see the Products purchased card); the flat field is only needed for an efficient bulk, multi-account query across the whole book |
-| `Case.ReasonCode__c` / `Case.EscalationProduct__c` equivalents | Escalations tab — reason code + product tagging, leadership rollup | No standard Salesforce equivalent for an *escalation* specifically (as opposed to a case); would need a dedicated Escalation record type or two new picklist fields, per Leana's finding that escalations should be tracked distinctly from routine tickets |
+| `Account.Segment` (`Segment__c`) | Engagement cadence tier, CSM Scorecard | **Resolved** — `MART_CUSTOMER_SUCCESS_PROD.CORE.LOGO_DIMENSIONS.MARKET_SEGMENT` |
+| `Case.Status='Blocked'` | Case Watch — blocked cases | **Resolved** — `CORE.CASE_LOGOS` has a real `STATUS='Blocked'` value (470 live rows) |
+| `Case.IsAging__c` | Case Watch — aging cases | **Still a gap** — no aging flag/created-date rollup in the mart or on the org; returns `[]` |
+| `Opportunity.GrowthType__c` | Growth mix (Renewal/Expansion/Transactional), CSM Scorecard growth columns | **Still a gap** — the mart's `OPPORTUNITY_TYPE` uses a different taxonomy; not remapped to avoid silently misrepresenting it. Returns `[]` |
+| `Account.NPS_Score__c` / `SurveyDate__c` | NPS on Home, Overview, CSM Scorecard, Account 360 | **Still a gap** — not in this mart or on the org. Per Leana, real NPS data exists via a Salesforce report or Nova Sales Snowflake — separate follow-up to identify and wire in |
+| `OpportunityLineItem.Family__c` (flat field) | TAP Refreshes tab — earliest hardware purchase date | **Resolved via Salesforce**, rewritten to the real relationship fields: `Product2.Family`, `Opportunity.AccountId`, `Opportunity.CloseDate` (confirmed live) |
+| `Case.ReasonCode__c` / `Case.EscalationProduct__c` equivalents | Escalations tab — reason code + product tagging, leadership rollup | **Still a gap** — no standard Salesforce object for an *escalation* distinct from a case; the app's own localStorage `escState` (reason/product tagging via the Escalations tab) remains the only source for this |
+| `Case.IsEscalated` | Lifetime cases by priority — escalation rate | **Partial** — doesn't exist on this org either; Priority breakdown is real (via Salesforce), but `IsEscalated` is defaulted to `False` on every row rather than guessed |
 
 Everything else (renewals, org hierarchy, cases, deals, line items, tasks/events)
 already maps onto stock Salesforce objects/fields, as covered in the main README.

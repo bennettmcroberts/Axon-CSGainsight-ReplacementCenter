@@ -14,11 +14,11 @@ shape regardless of which engine served it.
 from __future__ import annotations
 
 import random
-import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from .config import settings
+from .soql_helpers import extract_quoted, single_account_id
 
 PRIORITIES = ["Low", "Medium", "High", "Urgent"]
 
@@ -441,13 +441,6 @@ class MockDataset:
         }
 
     # ---------- query handling ----------
-    def _extract_quoted(self, text: str) -> list[str]:
-        return re.findall(r"'([A-Za-z0-9_]+)'", text)
-
-    def _single_account_id(self, query: str) -> str | None:
-        m = re.search(r"AccountId\s*=\s*'([A-Za-z0-9_]+)'", query)
-        return m.group(1) if m else None
-
     def handle(self, query: str) -> list[dict]:
         q = query.strip()
         qlow = q.lower()
@@ -487,7 +480,7 @@ class MockDataset:
         return []
 
     def _q_users(self, q: str) -> list[dict]:
-        ids = self._extract_quoted(q)
+        ids = extract_quoted(q)
         out = []
         for uid in ids:
             u = self.users.get(uid)
@@ -518,7 +511,7 @@ class MockDataset:
         return out[:300]
 
     def _q_open_cases(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -530,7 +523,7 @@ class MockDataset:
         return out
 
     def _q_lifetime_cases(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -542,7 +535,7 @@ class MockDataset:
         return out
 
     def _q_deal_agg(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -560,7 +553,7 @@ class MockDataset:
         return out
 
     def _q_growth_agg(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -579,7 +572,7 @@ class MockDataset:
         return out
 
     def _q_tap(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -588,7 +581,7 @@ class MockDataset:
         return out
 
     def _q_usage(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -609,7 +602,7 @@ class MockDataset:
         return out
 
     def _q_nps(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -618,7 +611,7 @@ class MockDataset:
         return out
 
     def _q_case_blocked(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -627,7 +620,7 @@ class MockDataset:
         return out
 
     def _q_case_aging(self, q: str) -> list[dict]:
-        ids = set(self._extract_quoted(q))
+        ids = set(extract_quoted(q))
         out = []
         for acc_id in ids:
             acc = self.accounts.get(acc_id)
@@ -636,7 +629,7 @@ class MockDataset:
         return out
 
     def _q_account_deals(self, q: str) -> list[dict]:
-        acc_id = self._single_account_id(q)
+        acc_id = single_account_id(q)
         acc = self.accounts.get(acc_id) if acc_id else None
         if not acc:
             return []
@@ -647,7 +640,7 @@ class MockDataset:
         } for d in deals]
 
     def _q_line_items_family(self, q: str) -> list[dict]:
-        acc_id = self._single_account_id(q)
+        acc_id = single_account_id(q)
         acc = self.accounts.get(acc_id) if acc_id else None
         if not acc:
             return []
@@ -661,7 +654,7 @@ class MockDataset:
         return rows[:12]
 
     def _q_line_items_name(self, q: str) -> list[dict]:
-        acc_id = self._single_account_id(q)
+        acc_id = single_account_id(q)
         acc = self.accounts.get(acc_id) if acc_id else None
         if not acc:
             return []
@@ -673,7 +666,7 @@ class MockDataset:
         return rows[:8]
 
     def _q_tasks(self, q: str) -> list[dict]:
-        acc_id = self._single_account_id(q)
+        acc_id = single_account_id(q)
         acc = self.accounts.get(acc_id) if acc_id else None
         if not acc:
             return []
@@ -685,7 +678,7 @@ class MockDataset:
         } for t in rows]
 
     def _q_events(self, q: str) -> list[dict]:
-        acc_id = self._single_account_id(q)
+        acc_id = single_account_id(q)
         acc = self.accounts.get(acc_id) if acc_id else None
         if not acc:
             return []

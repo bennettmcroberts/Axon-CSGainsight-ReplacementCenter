@@ -5280,10 +5280,8 @@ function viewModel(accts){
   const r=rollup(accts);
   return `${orgConfigSlotSwitcherHtml()}
   ${orgConfigChatHtml()}
-  <div class="card callout"><h3 style="border:none;margin:0 0 8px">A note on health scores <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
-  <p class="mini" style="line-height:1.7">"I'm not a fan of health scores... health scores are not what they're cracked up to be." A single 0–100 number is easy to game and easy to misread — it's kept here for continuity and as one input among several, but it is intentionally <b>not</b> the headline metric anymore. The Home and Command Center views now lead with engagement, growth and customer insights instead. Use this tab to tune the score if it's still useful to your team, or largely ignore it in favor of the CSM Scorecard, Case Watch and Engagement tabs.</p>
-  </div>
-  <div class="card"><h3>Health-score model</h3>
+  <div class="card"><h3>Health-score model <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
+  <p class="mini" style="margin:-4px 0 8px">CS Ops owns this — adjust weights and the whole book re-scores instantly.</p>
   <p class="mini">Every account starts at 100. These penalties subtract from it based on live signals. This transparency is the point: the score is never a black box.</p>
   ${sl('openCase','Per open case',5)}
   ${sl('highSev','Per high/urgent case',15)}

@@ -21,11 +21,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import public_user, verify_user
 from .config import settings
+from .hybrid_engine import run_hybrid_query
 from .mock_engine import run_mock_query
 from .salesforce_client import SalesforceUnavailable, run_salesforce_create, run_salesforce_query
 from .sheets_client import SheetsUnavailable, fetch_survey_responses
 from .gmail_client import GmailUnavailable, gmail_configured, get_message_body, list_recent_inbox, send_email
 from .ai_client import answer_org_config_chat, draft_email, generate_predictive_insight, interpret_reply
+from .snowflake_client import SnowflakeUnavailable
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 # AI-drafted-email hand-off files (see backend/app/main.py's ai-draft endpoints
@@ -183,6 +185,7 @@ def health():
         "dataMode": settings.effective_mode,
         "requestedMode": settings.data_mode,
         "salesforceConfigured": settings.salesforce_configured,
+        "snowflakeConfigured": settings.snowflake_configured,
     }
 
 
@@ -196,9 +199,11 @@ def soql(body: SoqlRequest, user: dict = Depends(require_auth)):
     try:
         if mode == "salesforce":
             records = run_salesforce_query(query)
+        elif mode == "hybrid":
+            records = run_hybrid_query(query)
         else:
             records = run_mock_query(query)
-    except SalesforceUnavailable as e:
+    except (SalesforceUnavailable, SnowflakeUnavailable) as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Query failed: {e}") from e
