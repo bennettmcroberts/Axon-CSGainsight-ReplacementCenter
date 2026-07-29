@@ -18,6 +18,48 @@ const PRODMAP={SAAS:'SaaS / Software (Evidence.com)',Cart:'Cartridges',Training:
 function prodName(f){ if(f==null||f==='') return 'Uncategorized'; if(PRODMAP[f]) return PRODMAP[f]; return String(f).toLowerCase().replace(/\b\w/g,c=>c.toUpperCase()); }
 function daysSince(d){ if(!d) return null; return Math.round((new Date()-new Date(d))/86400000); }
 
+// ---------- chart colors ----------
+// Validated categorical palette (dataviz skill's reference palette, re-stepped
+// to this app's own light/dark surfaces - see NOTES.md). The first 5 slots
+// mirror the --green/--blue/--amber/--violet/--red CSS tokens used everywhere
+// else in the UI (styles.css / frontend-axon/styles.css); +magenta/aqua/orange
+// extend to a full validated 8-hue set for the one wide categorical chart.
+// window.AXON_THEME mirrors the existing branch used throughout this file
+// (true = Axon primary UI's light-leaning values, false = classic UI's
+// dark-leaning values) - not a live light/dark toggle.
+const CHART_HUES = {
+  green:   {light:'#008300', dark:'#008300'},
+  blue:    {light:'#2a78d6', dark:'#3987e5'},
+  amber:   {light:'#eda100', dark:'#c98500'},
+  violet:  {light:'#4a3aa7', dark:'#9085e9'},
+  red:     {light:'#e34948', dark:'#e66767'},
+  magenta: {light:'#e87ba4', dark:'#d55181'},
+  aqua:    {light:'#1baf7a', dark:'#199e70'},
+  orange:  {light:'#eb6834', dark:'#d95926'},
+  // Neutral "Other" bucket (see foldToOther) - matches the --muted2 token,
+  // deliberately not one of the 8 identity hues above.
+  gray:    {light:'#8a8a8a', dark:'#6f7080'},
+};
+const CATEGORICAL_ORDER = ['blue','green','magenta','amber','aqua','orange','violet','red'];
+function chartHue(name){ return CHART_HUES[name][window.AXON_THEME?'light':'dark']; }
+// hasOther=true forces the LAST color to the neutral gray (see foldToOther) -
+// a folded "Other" bucket is never one of the 8 identity hues.
+function categoricalPalette(n,hasOther){
+  const arr=Array.from({length:n},(_,i)=>chartHue(CATEGORICAL_ORDER[i%CATEGORICAL_ORDER.length]));
+  if(hasOther && n>0) arr[n-1]=chartHue('gray');
+  return arr;
+}
+// Past ~8 categories, cycling a fixed hue set makes two unrelated categories
+// share an identical color (misleading, not just "a lot of colors") - per the
+// dataviz skill's rule, fold the long tail into a single "Other" bucket
+// instead. list items must have {label, count}.
+function foldToOther(list, maxSlots){
+  if(list.length<=maxSlots) return {list, hasOther:false};
+  const head=list.slice(0,maxSlots-1);
+  const restCount=list.slice(maxSlots-1).reduce((s,b)=>s+b.count,0);
+  return {list:[...head,{label:'Other',count:restCount}], hasOther:true};
+}
+
 // ---------- persisted settings ----------
 // Namespaced per logged-in user (window.CURRENT_USER, injected server-side before
 // this script loads - see render_app_shell in backend/app/main.py) so teammates
@@ -120,7 +162,7 @@ function seedMockCsatQuarter(){
 // Customer Insights, and Managed-Account NPS so the three stay consistent.
 function quarterToggleHtml(sel,setYearFn,setQFn,extraYears){
   const years=[...new Set([+MOCK_QUARTER.split('-Q')[0],+PILOT_QUARTER.split('-Q')[0],sel.year,...(extraYears||[])])].sort((a,b)=>b-a);
-  return `<div class="row-actions" style="margin-bottom:12px;flex-wrap:wrap;align-items:center">
+  return `<div class="row-actions" style="margin-bottom:12px;flex-wrap:wrap;align-items:flex-end">
     <label class="mini">Year
       <select class="select sm" style="display:block;margin-top:4px" onchange="${setYearFn}(this.value)">${years.map(y=>`<option value="${y}"${sel.year===y?' selected':''}>${y}</option>`).join('')}</select>
     </label>
@@ -305,7 +347,7 @@ function productScorecardCardHtml(a){
   </div>`;
   const riskOpts=['healthy','watch','atrisk'];
   const riskLabel={healthy:'Healthy',watch:'Watch',atrisk:'At risk'};
-  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Product-line scorecard <span class="hint">goals/risk per product family, aggregating up to this account</span></h3>
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Product-line scorecard</h3>
     <table><thead><tr><th>Product family</th><th>Risk</th><th>Goal</th><th>Notes</th></tr></thead><tbody>
     ${fams.map(f=>{
       const fam=f.fam||'(unspecified)'; const r=rec[fam]||{goal:'',risk:'healthy',notes:''};
@@ -1683,7 +1725,16 @@ function riskCardHtml(a){
       <span class="mini">${fmtMoney(a.renewalAmount)} · renews ${a.dclose>9000?'—':a.dclose+'d'}</span>
     </div>
     <div class="risk-card-badges">
-      ${openTriggers.map(t=>`<span class="pill ${t.triggerType===riskAlertFilter?'p-blue':t.status==='pending'?'p-amber':'p-red'}" title="${t.status==='pending'?'Pending - action taken, not yet confirmed resolved':'Open'}">${esc(RISK_TRIGGER_LABELS[t.triggerType]||t.triggerType)}</span>`).join('')}
+      ${(()=>{
+        const triggerPill=t=>`<span class="pill ${t.triggerType===riskAlertFilter?'p-blue':t.status==='pending'?'p-amber':'p-red'}" title="${t.status==='pending'?'Pending - action taken, not yet confirmed resolved':'Open'}">${esc(RISK_TRIGGER_LABELS[t.triggerType]||t.triggerType)}</span>`;
+        // Cards with many open triggers used to render every tag unbounded,
+        // making card (and column) height wildly inconsistent - cap what
+        // shows by default and let a click reveal the rest instead.
+        const CAP=3;
+        const shown=openTriggers.slice(0,CAP), hidden=openTriggers.slice(CAP);
+        return shown.map(triggerPill).join('')
+          + (hidden.length?`<span class="pill p-gray clickable" onclick="event.stopPropagation();this.nextElementSibling.style.display='contents';this.remove()">+${hidden.length} more</span><span style="display:none">${hidden.map(triggerPill).join('')}</span>`:'');
+      })()}
       ${isOverridden?`<span class="pill p-blue">Overridden</span>`:''}
     </div>
     <div class="risk-card-touch">${touch?`Next touch: <b>${esc(fmtDate(touch.date))}</b> · ${esc(touch.type)}`:'No touch scheduled'}</div>
@@ -1810,11 +1861,12 @@ function viewRiskKanban(accts){
   const scopedAccts = riskTest10 ? STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name)) : accts;
   const alertOpts=Object.keys(RISK_TRIGGER_LABELS).map(k=>`<option value="${k}"${riskAlertFilter===k?' selected':''}>${esc(RISK_TRIGGER_LABELS[k])}</option>`).join('');
   const triggerBreakdown=riskTriggerBreakdown(scopedAccts).filter(b=>b.count>0);
+  const {list:triggerRows,hasOther:triggerHasOther}=foldToOther(triggerBreakdown,8);
+  const triggerColors=categoricalPalette(triggerRows.length,triggerHasOther);
   return `<div class="card"><h3>Trigger types</h3>
-    ${triggerBreakdown.length?`<div class="grid2" style="margin-top:10px">
-      <div class="card" style="box-shadow:none"><div class="chartbox"><canvas id="riskEscDonut"></canvas></div></div>
-      <div class="card" style="box-shadow:none"><div class="chartbox" style="height:${Math.max(180,triggerBreakdown.length*38)}px"><canvas id="riskEscBar"></canvas></div></div>
-    </div>`:`<p class="mini" style="margin-top:8px">No open alerts right now.</p>`}
+    ${triggerRows.length?`<table style="margin-top:10px"><thead><tr><th>Trigger</th><th class="num">Count</th></tr></thead><tbody>
+      ${triggerRows.map((b,i)=>`<tr><td><i class="dot" style="background:${triggerColors[i]}"></i> ${esc(b.label)}</td><td class="num"><b>${b.count}</b></td></tr>`).join('')}
+      </tbody></table>`:`<p class="mini" style="margin-top:8px">No open alerts right now.</p>`}
   </div>
   <div class="card">
     <h3>Accounts & Risk<span class="sortbar">
@@ -1884,8 +1936,8 @@ const ORG_CONFIG_CATEGORY_OPTIONS=['escalation','renewal','usage','case_watch','
 function orgConfigCategoryLabel(cat){ return cat==='escalation'?'Escalation':(CTA_CATEGORY_LABELS[cat]||cat); }
 function orgConfigSlotSwitcherHtml(){
   const names=Object.keys(orgConfigSlots);
-  return `<div class="card"><h3>Active configuration <span class="hint">every CSM org can run its own instance of this - weights, timing, on/off, even brand-new triggers - on top of the same fixed pipeline</span></h3>
-    <div class="row-actions" style="flex-wrap:wrap;align-items:center">
+  return `<div class="card"><h3>Active configuration</h3>
+    <div class="row-actions" style="flex-wrap:wrap;align-items:flex-end">
       <label class="mini">Config
         <select class="select" style="display:block;margin-top:4px;min-width:200px" onchange="setActiveOrgConfig(this.value)">
           ${names.map(n=>`<option value="${esc(n)}" ${n===activeOrgConfigName?'selected':''}>${esc(n)}</option>`).join('')}
@@ -1921,7 +1973,7 @@ function riskWeightsPanelHtml(){
       <label class="mini">Aging: +bonus every <input type="number" min="0" style="width:50px" value="${riskWeights.agingDays}" onchange="setRiskAging('agingDays',this.value)"> days a trigger stays open, bonus = <input type="number" min="0" style="width:50px" value="${riskWeights.agingBonus}" onchange="setRiskAging('agingBonus',this.value)"></label>
     </div>
   </div>
-  <div class="card"><h3>Add a custom trigger <span class="hint">never-planned-for input - just needs a category + weight, same as any built-in trigger</span></h3>
+  <div class="card"><h3>Add a custom trigger</h3>
     <div class="row-actions" style="flex-wrap:wrap">
       <input type="text" id="newTriggerKey" class="select" placeholder="key (e.g. radio_refresh_due)" style="min-width:180px">
       <input type="text" id="newTriggerLabel" class="select" placeholder="Label shown in the app" style="min-width:220px">
@@ -3014,7 +3066,7 @@ function viewAcctOutcomes(accts){
   const adoptionDisapproved=completed.filter(a=>adoptionTier(a)==='low');
   const approved=completed.filter(a=>a.nps!=null&&a.nps>=9);
   const disapproved=completed.filter(a=>a.nps!=null&&a.nps<9);
-  let html=`<div class="card"><h3>Account Outcomes <span class="hint">measuring whether completed Success Plans actually drove product adoption</span></h3>
+  let html=`<div class="card"><h3>Account Outcomes</h3>
     <p class="mini" style="margin-bottom:12px">The primary question: did a completed Success Plan translate into real, sustained use of the product's most valuable workflows? NPS (below) still matters, but only as supporting context — it's too delayed, contact-specific, and pricing-sensitive to be the proof a recommended action worked. Detailed per-product/per-segment adoption benchmarks would ultimately come from Mixpanel/Snowflake usage data; today's adoption tiers are a configurable stand-in for that (Configure Org Data → Adoption thresholds).</p>
     ${quarterToggleHtml(sel,'setGlobalQYear','setGlobalQQ')}
     ${outcomeFunnelHtml(accts.length,'in scope',pending.length,'plan in progress',completed.length,qKey+' cycle',adoptionApproved.length,'at/above benchmark',adoptionDisapproved.length,'below benchmark','Adoption improved','Adoption declined','clickAdoptionOutcomeBranch','Adopt')}
@@ -3123,14 +3175,6 @@ function scrollToCsmDriver(kind,csm){
   if(el){ el.open=true; el.scrollIntoView({behavior:'smooth',block:'start'}); }
 }
 function scrollToSection(id){ const el=document.getElementById(id); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
-// Detractors KPI tile: jump to the drivers card AND auto-open every negative
-// entry there (instead of leaving each category collapsed behind a click).
-function scrollAndOpenNegativeDrivers(kind){
-  const el=document.getElementById('npsDriversCard-'+kind);
-  if(!el) return;
-  el.querySelectorAll('details.disc').forEach(d=>{ d.open=true; });
-  el.scrollIntoView({behavior:'smooth',block:'start'});
-}
 function destroyChartKey(key){ if(charts[key]){ try{charts[key].destroy()}catch(e){} delete charts[key]; } }
 
 // ---- Test 10 (real Google Form pilot) ----
@@ -3532,7 +3576,7 @@ function drawNpsCharts(kind,accts){
   } else {
     d=getNpsScoped(kind,accts);
   }
-  const green=window.AXON_THEME?'#1a9e5c':'#3ddc97', red=window.AXON_THEME?'#d64545':'#ff6b6b', amber=window.AXON_THEME?'#d4890a':'#ffb84d';
+  const green=chartHue('green'), red=chartHue('red'), amber=chartHue('amber');
   destroyChartKey('npsDonut'+kind); destroyChartKey('npsBar'+kind);
   const dEl=$('#nps'+kind+'Donut');
   if(dEl){ charts['npsDonut'+kind]=new Chart(dEl,{type:'doughnut',data:{labels:['10 (Promoters)','9 (Neutral)','Below 9 (Detractors)'],datasets:[{data:[d.promoters.length,d.neutrals.length,d.detractors.length],backgroundColor:[green,amber,red],borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})}); }
@@ -3587,7 +3631,7 @@ function drawNpsCharts(kind,accts){
     const maxN2=Math.max(...csmCats.map(c=>c.n));
     charts['npsCsmBar'+kind]=new Chart(csmBarEl,{
       type:'bar',
-      data:{ labels:csmCats.map(c=>c.csm), datasets:[{ data:csmCats.map(c=>c.n), backgroundColor:(window.AXON_THEME?'#d4890a':'#ffb84d'), borderRadius:window.AXON_THEME?0:5 }] },
+      data:{ labels:csmCats.map(c=>c.csm), datasets:[{ data:csmCats.map(c=>c.n), backgroundColor:chartHue('amber'), borderRadius:window.AXON_THEME?0:5 }] },
       options:{
         indexAxis:'y', responsive:true, maintainAspectRatio:false,
         scales:{
@@ -3626,6 +3670,30 @@ function test10AsNpsRows(){
     const a=STATE.accounts.find(x=>x.name===r.account);
     return {id:a?a.id:r.account,label:r.account,owner:a?a.ownerName:'—',score:r.score,date:(r.timestamp||'').slice(0,10),category:r.reason,comment:r.comment,source:r.source,description:r.description,relationshipIntent:r.relationshipIntent,csatScore:r.csatScore??null,csatComments:r.csatComments||''};
   });
+}
+// Cached per-kind so the click-through modals (openNpsDrivers/openNpsCsmFeedback)
+// can access the same grouped comment data npsView() just computed, without
+// recomputing it - the modal opens from a later, separate click event.
+let NPS_DRIVER_CACHE={};
+function npsDriverAccordionHtml(groups,pillClass){
+  return groups.length?groups.map(g=>`<details class="disc" style="margin-bottom:10px">
+    <summary><h4 style="display:inline-flex;align-items:center;gap:8px;margin:0">${esc(g.label)} <span class="pill ${pillClass(g)}">${g.rows.length}</span></h4></summary>
+    <div style="margin-top:10px">${g.rows.map(r=>`<div class="next-step" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><b>${esc(r.label)}</b><span class="pill ${npsTierPill(r.score!=null?r.score:r.csatScore)}">${r.score!=null?r.score:r.csatScore}/10</span></div><div class="mini" style="margin-top:4px">${esc(r.comment||r.csatComments||'')}</div><div class="mini" style="color:var(--muted2);margin-top:4px">${r.date?esc(r.date):''}${r.owner&&r.score!=null?' · Owner '+esc(r.owner):''}</div></div>`).join('')}</div>
+  </details>`).join(''):'<p class="mini">Nothing logged in this scope.</p>';
+}
+function openNpsDrivers(kind){
+  const d=NPS_DRIVER_CACHE[kind]; if(!d) return;
+  const groups=d.nonPromoterCats.map(c=>({label:c.cat,rows:d.grouped[c.cat]}));
+  $('#sheet').innerHTML=`<div class="hd"><div><h2>Non-promoter drivers</h2><div class="mini">Every NPS/CSAT response scored 9 or below, grouped by driver category</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+    <div class="bd">${npsDriverAccordionHtml(groups,g=>g.rows.some(r=>r.score<9)?'p-red':'p-amber')}</div>`;
+  showOverlay();
+}
+function openNpsCsmFeedback(kind){
+  const d=NPS_DRIVER_CACHE[kind]; if(!d) return;
+  const groups=d.csmCats.map(c=>({label:c.csm,rows:d.csmGrouped[c.csm]}));
+  $('#sheet').innerHTML=`<div class="hd"><div><h2>CSM Feedback</h2><div class="mini">CSAT complaints grouped by the CSM they were logged against</div></div><button class="x" onclick="closeSheet()">✕</button></div>
+    <div class="bd">${npsDriverAccordionHtml(groups,()=>'p-red')}</div>`;
+  showOverlay();
 }
 function npsView(kind,accts){
   const label=kind==='managed'?'Managed Account NPS & CSAT':'Agency NPS & CSAT';
@@ -3667,6 +3735,7 @@ function npsView(kind,accts){
   const csmCats=Object.entries(csmCounts).map(([csm,n])=>({csm,n})).sort((a,b)=>b.n-a.n);
   const csmGrouped={};
   complaints.forEach(r=>{ (csmGrouped[r.owner]=csmGrouped[r.owner]||[]).push(r); });
+  NPS_DRIVER_CACHE[kind]={nonPromoterCats,grouped,csmCats,csmGrouped};
   const test10Bar=kind==='managed'?`<div class="row-actions" style="margin:-4px 0 14px;flex-wrap:wrap">
     <button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setNpsManagedTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book':'Pull up Test 10 (live pilot)'}</button>
     ${riskTest10?`<button type="button" class="btn sm" onclick="refreshSheetData()">Refresh from Sheet</button><span class="mini">${sheetLastFetch?'Last refreshed '+sheetLastFetch.toLocaleTimeString():''}</span>`:''}
@@ -3679,32 +3748,26 @@ function npsView(kind,accts){
       <div class="kpi clickable" onclick="scrollToSection('npsSplitCard-${kind}')"><div class="l">Total responses</div><div class="v">${total}</div><div class="d">${kind==='managed'?'accounts with an NPS response':'respondents across the agency'}</div></div>
       <div class="kpi risk-green clickable" onclick="scrollToSection('npsSplitCard-${kind}')"><div class="l">10 (Promoters)</div><div class="v">${overallPromoters.length}</div><div class="d">NPS + CSAT combined · ${combinedTotal?Math.round(overallPromoters.length/combinedTotal*100):0}%</div></div>
       <div class="kpi risk-amber clickable" onclick="scrollToSection('npsSplitCard-${kind}')"><div class="l">9 (Neutral)</div><div class="v">${overallNeutrals.length}</div><div class="d">NPS + CSAT combined · ${combinedTotal?Math.round(overallNeutrals.length/combinedTotal*100):0}%</div></div>
-      <div class="kpi risk-red clickable" onclick="scrollAndOpenNegativeDrivers('${kind}')"><div class="l">Below 9 (Detractors)</div><div class="v">${overallDetractors.length}</div><div class="d">NPS + CSAT combined · ${combinedTotal?Math.round(overallDetractors.length/combinedTotal*100):0}%</div></div>
+      <div class="kpi risk-red clickable" onclick="openNpsDrivers('${kind}')"><div class="l">Below 9 (Detractors)</div><div class="v">${overallDetractors.length}</div><div class="d">NPS + CSAT combined · ${combinedTotal?Math.round(overallDetractors.length/combinedTotal*100):0}%</div></div>
     </div>
-    <div class="grid2" id="npsSplitCard-${kind}">
-      <div class="card" style="box-shadow:none"><h3>NPS Response split</h3><div class="chartbox"><canvas id="nps${kind}Donut"></canvas></div></div>
+    <div class="grid3" id="npsSplitCard-${kind}">
+      <div class="card" style="box-shadow:none"><h3>NPS split</h3><div class="chartbox"><canvas id="nps${kind}Donut"></canvas></div></div>
+      <div class="card" style="box-shadow:none" id="csatSplitCard-${kind}"><h3>CSAT split</h3><div class="chartbox"><canvas id="nps${kind}CsatDonut"></canvas></div></div>
       <div class="card" style="box-shadow:none"><h3>Why scores are below 9</h3><div class="chartbox" style="height:${Math.max(180,cats.length*38)}px"><canvas id="nps${kind}Bar"></canvas></div></div>
     </div>
-    <div class="grid2" id="csatSplitCard-${kind}" style="margin-top:12px">
-      <div class="card" style="box-shadow:none"><h3>CSAT Response split</h3><div class="chartbox"><canvas id="nps${kind}CsatDonut"></canvas></div></div>
-      <div class="card" style="box-shadow:none"><h3>CSM Feedback</h3><div class="chartbox" style="height:${Math.max(180,csmCats.length*38)}px"><canvas id="nps${kind}CsmBar"></canvas></div></div>
-    </div>
-    <div class="grid2" style="margin-top:12px">
-      <div class="card" style="box-shadow:none"><h3>How would you describe Axon to a colleague?</h3><div class="chartbox"><canvas id="nps${kind}Desc"></canvas></div></div>
-      <div class="card" style="box-shadow:none"><h3>Do you intend to grow, stay the same, or decline your relationship?</h3><div class="chartbox"><canvas id="nps${kind}Intent"></canvas></div></div>
+    <div class="grid3" style="margin-top:12px">
+      <div class="card" style="box-shadow:none"><h3>Complaints by CSM</h3><div class="chartbox" style="height:${Math.max(180,csmCats.length*38)}px"><canvas id="nps${kind}CsmBar"></canvas></div></div>
+      <div class="card" style="box-shadow:none"><h3>Describe Axon to a colleague</h3><div class="chartbox"><canvas id="nps${kind}Desc"></canvas></div></div>
+      <div class="card" style="box-shadow:none"><h3>Grow, stay, or decline?</h3><div class="chartbox"><canvas id="nps${kind}Intent"></canvas></div></div>
     </div>
   </div>
-  <div class="card" id="npsDriversCard-${kind}"><h3>Non-promoter drivers</h3>
-    ${nonPromoterCats.length? nonPromoterCats.map(c=>`<details class="disc" id="npsdrv-${kind}-${npsSlug(c.cat)}" style="margin-bottom:10px">
-      <summary><h4 style="display:inline-flex;align-items:center;gap:8px;margin:0">${esc(c.cat)} <span class="pill ${grouped[c.cat].some(r=>r.score<9)?'p-red':'p-amber'}">${c.n}</span></h4></summary>
-      <div style="margin-top:10px">${grouped[c.cat].map(r=>`<div class="next-step" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><b>${esc(r.label)}</b><span class="pill ${npsTierPill(r.score)}">${r.score}/10</span></div><div class="mini" style="margin-top:4px">${esc(r.comment)}</div><div class="mini" style="color:var(--muted2);margin-top:4px">${r.date?esc(r.date):''}${r.owner?' · Owner '+esc(r.owner):''}</div></div>`).join('')}</div>
-    </details>`).join('') : '<p class="mini">No feedback logged at 9 or below in this scope.</p>'}
-  </div>
-  <div class="card" id="csmFeedbackCard-${kind}"><h3>CSM Feedback</h3>
-    ${csmCats.length? csmCats.map(c=>`<details class="disc" id="csmdrv-${kind}-${npsSlug(c.csm)}" style="margin-bottom:10px">
-      <summary><h4 style="display:inline-flex;align-items:center;gap:8px;margin:0">${esc(c.csm)} <span class="pill p-red">${c.n}</span></h4></summary>
-      <div style="margin-top:10px">${csmGrouped[c.csm].map(r=>`<div class="next-step" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><b>${esc(r.label)}</b><span class="pill ${npsTierPill(r.csatScore)}">${r.csatScore}/10</span></div><div class="mini" style="margin-top:4px">${esc(r.csatComments)}</div><div class="mini" style="color:var(--muted2);margin-top:4px">${r.date?esc(r.date):''}</div></div>`).join('')}</div>
-    </details>`).join('') : '<p class="mini">No CSM feedback logged in this scope.</p>'}
+  <div class="grid2">
+    <div class="card clickable" onclick="openNpsDrivers('${kind}')"><h3>Non-promoter drivers</h3>
+      ${nonPromoterCats.length?`<div class="row-actions" style="margin-top:8px">${nonPromoterCats.map(c=>`<span class="pill ${grouped[c.cat].some(r=>r.score<9)?'p-red':'p-amber'}">${esc(c.cat)} · ${c.n}</span>`).join('')}</div><p class="mini" style="margin-top:10px">${nonPromoters.length} response${nonPromoters.length===1?'':'s'} scored 9 or below. Click to view comments →</p>`:'<p class="mini">No feedback logged at 9 or below in this scope.</p>'}
+    </div>
+    <div class="card clickable" onclick="openNpsCsmFeedback('${kind}')"><h3>CSM Feedback</h3>
+      ${csmCats.length?`<div class="row-actions" style="margin-top:8px">${csmCats.map(c=>`<span class="pill p-red">${esc(c.csm)} · ${c.n}</span>`).join('')}</div><p class="mini" style="margin-top:10px">${complaints.length} complaint${complaints.length===1?'':'s'} logged. Click to view comments →</p>`:'<p class="mini">No CSM feedback logged in this scope.</p>'}
+    </div>
   </div>`;
 }
 function viewNpsManaged(accts){ return npsView('managed',accts); }
@@ -3842,7 +3905,7 @@ function drawInsightsChart(accts){
   const light=(window.CSCC_THEME||document.documentElement.getAttribute('data-theme'))==='light'
     || (!window.CSCC_THEME && !!window.AXON_THEME && document.documentElement.getAttribute('data-theme')!=='dark');
   const gridColor=light?'#e0e0e0':'#242634', textColor=light?'#5c5c5c':'#9a9ba8';
-  const violet=window.AXON_THEME?'#7a5af8':'#c08bff';
+  const violet=chartHue('violet');
   const maxN=Math.max(...themes.map(t=>t.n));
   charts.insightsTheme=new Chart(el,{
     type:'bar',
@@ -3981,7 +4044,7 @@ function viewAcctScorecard(accts){
       <div class="kpi risk-red"><div class="l">ARR at risk</div><div class="v">${fmtMoney(riskArr)}</div><div class="d">renewal ARR × risk</div></div>
     </div>
     <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th></tr></thead><tbody>
-    ${sorted.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td></tr>`).join('')}
+    ${sorted.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthWithTier(a.health,a.tier)}</td></tr>`).join('')}
     </tbody></table>
   </div>`;
 }
@@ -4006,16 +4069,22 @@ function ownerCell(name){
 function catTag(cat,extra){ return `<span class="tag ${hueFor(cat)}"${extra?` style="${extra}"`:''}>${esc(cat)}</span>`; }
 function healthCell(h){ if(h==null) return `<span class="hs"><span class="bar"><i style="width:0%"></i></span><b style="color:var(--muted)">—</b></span>`; const c=h>=75?'var(--green)':h>=50?'var(--amber)':'var(--red)'; return `<span class="hs"><span class="bar"><i style="width:${h}%;background:${c}"></i></span><b style="color:${c}">${h}</b></span>`; }
 function tierPill(t){ if(t==null) return '<span class="pill p-gray">No data</span>'; return t==='healthy'?'<span class="pill p-green">Healthy</span>':t==='watch'?'<span class="pill p-amber">Watch</span>':'<span class="pill p-red">At risk</span>'; }
+// healthCell + tierPill always render as a single atomic unit - without this,
+// the two sit as separate inline elements and wrap onto their own line only
+// when the pill text happens to be just wide enough (e.g. "Healthy"), leaving
+// some rows one line and others two for no visible reason.
+function healthWithTier(h,t){ return `<span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap">${healthCell(h)}${tierPill(t)}</span>`; }
 function sevPill(s){ const m={Critical:'p-red',High:'p-red',Medium:'p-amber',Low:'p-gray'}; return `<span class="pill ${m[s]||'p-gray'}">${s}</span>`; }
 function statusPill(s){ const m={Open:'p-red','In Progress':'p-amber',Resolved:'p-green'}; return `<span class="pill ${m[s]||'p-gray'}">${s}</span>`; }
 
 function renderCrumb(){
-  const path = crumbPath(STATE.scope);
+  // Root ("Axon Customer Success") carries no navigational value of its own -
+  // drop it from the displayed trail; deeper drill-down crumbs still show.
+  const path = crumbPath(STATE.scope).filter(n=>n.id!=='ROOT');
   $('#crumb').innerHTML = path.map((n,i)=> i===path.length-1
     ? `<span class="cur">${esc(n.name)}</span>`
     : `<button onclick="setScope('${n.id}')">${esc(n.name)}</button><span class="sep">›</span>`).join('');
-  const node = STATE.nodeIndex[STATE.scope];
-  $('#scoperole').textContent = node && node.title ? node.title : '';
+  $('#scoperole').textContent = '';
   const va=$('#viewas');
   if(va){
     va.innerHTML = `<span class="mini" style="margin-right:6px">View as</span>
@@ -4172,12 +4241,11 @@ function viewHome(){
   // indicator worth checking regularly, normal = informational/context.
   const kpis=[
     ['Engagement rate',r.engagementPct+'%',r.inCadence+' of '+r.n+' accounts in outreach cadence','engagement','high'],
-    ['Growth (organic + expansion + transactional)',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard','normal'],
-    ['Customer insights logged',insightsRecent,'last 30 days across the book','scorecard','normal'],
+    ['Growth',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard','normal'],
+    ['Insights logged',insightsRecent,'last 30 days across the book','scorecard','normal'],
     ['Book NPS',npsR?npsR.score:'—',npsR?(npsR.n+' survey responses · '+npsR.promoters+' promoters, '+npsR.detractors+' detractors'):'no biannual survey responses on file','scorecard','high'],
-    ['Total Contract Value (book)',fmtMoney(r.arr),r.renewals+' open renewals','overview','normal'],
+    ['Total Contract Value',fmtMoney(r.arr),r.renewals+' open renewals','overview','normal'],
     ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% risk-weighted','riskboard','critical'],
-    ['New logos to onboard',logos.length,planned+' with a success plan','plans','normal'],
     ['TAP refreshes due',tapOverdue+tapDueSoon,tapOverdue+' overdue · '+tapDueSoon+' due within 90 days','riskboard','high'],
   ];
   // Derived straight from NAV_CATEGORIES/TAB_LABELS (not a separately
@@ -4186,21 +4254,21 @@ function viewHome(){
   // Only the per-category description below needs a human touch, and only
   // when that category's actual purpose changes, not on routine tab shuffling.
   const categoryDescriptions={
-    cockpit:'Book-level KPIs, ARR at risk, health distribution, your top revenue-weighted risk accounts, and your prioritized worklist.',
-    performance:'Account and CSM scorecards, the executive report, and where trigger weights/thresholds and org data integrations are configured.',
-    pulse:'Managed & Agency NPS, quarterly NPS/CSAT tracking, cross-account Customer Insights, and Usage & Adoption.',
-    risk:'Kanban board of every account by risk stage — renewals, TAP refreshes, case watch and escalations move automatically as the trigger engine fires.',
-    engagement:'Where every open trigger actually gets worked — Escalations, Active CTAs, Email Outreach, and Customer Contact Insights.',
-    journey:'Predictive Insights proposes a forward-looking timeline per account, which becomes a Success Plan, tracked in Customer Success Emails, and measured in Account Outcomes.',
-    resources:'Guides, SOPs, and every Salesforce object/field this app actually reads.',
+    cockpit:'KPIs, ARR at risk, and your prioritized worklist.',
+    performance:'CSM scorecards, executive report, and org config.',
+    pulse:'NPS/CSAT tracking, Customer Insights, Usage & Adoption.',
+    risk:'Kanban board of every account by risk stage.',
+    engagement:'Escalations, Active CTAs, Email Outreach, and Insights.',
+    journey:'Predictive Insights → Success Plans → Account Outcomes.',
+    resources:'Guides, SOPs, and Salesforce object integrations.',
   };
   const features=NAV_CATEGORIES.filter(c=>c.id!=='home').map(c=>[c.label,c.tabs[0],categoryDescriptions[c.id]||'']);
   return `
   <div class="hero">
-    <div class="eyebrow">Customer Success · Command Center</div>
-    <h2>Welcome to your CS Command Center</h2>
+    <div class="eyebrow">Customer Success Command Center</div>
+    <h2>Welcome ${esc((window.CURRENT_USER&&(window.CURRENT_USER.displayName||window.CURRENT_USER.username))||'there')}!</h2>
   </div>
-  <div class="kpis">${kpis.map(k=>{
+  <div class="kpis kpis-7col">${kpis.map(k=>{
     const tier=k[4]==='critical'?' risk-red':k[4]==='high'?' risk-amber':'';
     return `<div class="kpi clickable${tier}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`;
   }).join('')}</div>
@@ -4212,14 +4280,13 @@ function viewHome(){
       ${npsR?`<div class="legend"><span><i class="dot" style="background:var(--green)"></i>Promoters (${npsR.promoters})</span><span><i class="dot" style="background:var(--amber)"></i>Passives (${npsR.passives})</span><span><i class="dot" style="background:var(--red)"></i>Detractors (${npsR.detractors})</span></div>`:'<p class="mini">No survey responses on file.</p>'}
     </div>
   </div>
-  <div class="card" style="margin-top:16px"><h3>Trigger breakdown <span class="hint">every open risk trigger, book-wide</span></h3><div class="chartbox"><canvas id="riskEscDonut"></canvas></div></div>
-  <div class="grid2" style="margin-top:16px">
+  <div class="grid3" style="margin-top:16px">
+    <div class="card"><h3>Trigger breakdown</h3><div class="chartbox"><canvas id="riskEscDonut"></canvas></div></div>
     <div class="card"><h3>Escalations vs Active CTAs</h3><div class="chartbox"><canvas id="ceSplitDonut"></canvas></div></div>
-    <div class="card"><h3>Active, Pending, Resolved <span class="hint">across all Escalations + Active CTAs</span></h3><div class="chartbox"><canvas id="ceTotalProgDonut"></canvas></div></div>
+    <div class="card"><h3>Active, Pending, Resolved</h3><div class="chartbox"><canvas id="ceTotalProgDonut"></canvas></div></div>
   </div>
-  ${logos.length?`<p class="mini" style="margin:14px 4px"><b>${logos.length}</b> new-logo account${logos.length===1?'':'s'} to onboard. <a href="#" onclick="setTab('plans');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)"><b>Generate success plans →</b></a></p>`:''}
   <div class="card" style="margin-top:16px"><h3>Where to start</h3>
-    <div class="features">${features.map(f=>`<div class="feature" onclick="setTab('${f[1]}')"><h4>${esc(f[0])}</h4><p>${esc(f[2])}</p><div class="go">Open →</div></div>`).join('')}</div>
+    <div class="features" style="grid-template-columns:repeat(7,minmax(0,1fr))">${features.map(f=>`<div class="feature" onclick="setTab('${f[1]}')"><h4>${esc(f[0])}</h4><p>${esc(f[2])}</p><div class="go">Open →</div></div>`).join('')}</div>
   </div>`;
 }
 // Reuses the exact same chart-drawing functions as Accounts & Risk (trigger
@@ -4230,7 +4297,7 @@ function drawHomeChart(){
   Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}}); charts={};
   const accts=STATE.accounts;
   const r=rollup(accts);
-  const hc=window.AXON_THEME?['#1a9e5c','#d4890a','#d64545']:['#3ddc97','#ffb84d','#ff6b6b'];
+  const hc=[chartHue('green'),chartHue('amber'),chartHue('red')];
   const h=$('#cHome'); if(h){ charts.home=new Chart(h,{type:'doughnut',data:{labels:['Healthy','Watch','At risk'],datasets:[{data:[r.green,r.amber,r.red],backgroundColor:hc,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',legend:false,noScales:true})}); }
   const npsR=npsRollup(accts);
   const nEl=$('#homeNpsDonut');
@@ -4245,25 +4312,25 @@ function viewOverview(accts){
   const npsR=npsRollup(accts);
   const kpis=[
     ['Engagement rate',r.engagementPct+'%',r.inCadence+' of '+r.n+' in outreach cadence','engagement'],
-    ['Growth in scope',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard'],
-    ['Total Contract Value in scope',fmtMoney(r.arr),r.renewals+' open renewals','riskboard'],
+    ['Growth',fmtMoney(r.growthTotal),'Renewal '+fmtMoney(r.growth.Renewal)+' · Expansion '+fmtMoney(r.growth.Expansion)+' · Transactional '+fmtMoney(r.growth.Transactional),'scorecard'],
+    ['Total Contract Value',fmtMoney(r.arr),r.renewals+' open renewals','riskboard'],
     ['ARR at risk',fmtMoney(r.risk),Math.round(r.risk/(r.arr||1)*100)+'% of book, risk-weighted','riskboard'],
-    ['Avg health (ARR-wtd)',r.health==null?'—':r.health,r.red+' at-risk · '+r.amber+' watch · '+r.green+' healthy','model'],
-    ['NPS in scope',npsR?npsR.score:'—',npsR?(npsR.n+' of '+accts.length+' accounts surveyed'):'no survey responses in scope','scorecard'],
+    ['Avg health',r.health==null?'—':r.health,r.red+' at-risk · '+r.amber+' watch · '+r.green+' healthy','model'],
+    ['NPS',npsR?npsR.score:'—',npsR?(npsR.n+' of '+accts.length+' accounts surveyed'):'no survey responses in scope','scorecard'],
     ['Open escalations',STATE.escList.filter(e=>accts.includes(e.acct)&&e.status!=='Resolved').length,r.high+' high/urgent · '+r.cases+' open cases','riskboard'],
     ['Expansion-ready accounts',accts.filter(a=>opportunityTier(a)==='expand').length,accts.filter(a=>opportunityTier(a)==='protect').length+' to protect & retain instead','hierarchy'],
   ];
   const topRisk=[...accts].sort((a,b)=>b.riskARR-a.riskARR).slice(0,8);
   const gSel=globalQSel||defaultQSel();
   return `
-  <div class="card" style="margin-bottom:16px"><h3>Global controls <span class="hint">apply to every category and sub-category across the app</span></h3>
+  <div class="card" style="margin-bottom:16px"><h3>Global controls</h3>
     <div class="row-actions" style="margin-bottom:10px">
       <button type="button" class="btn sm${riskTest10?' primary':''}" onclick="setRiskTest10(${riskTest10?'false':'true'})">${riskTest10?'← Back to full book (Test 10 off)':'Test 10 (whole app)'}</button>
       <span class="mini">${riskTest10?'Every tab is scoped to the 10 pilot accounts until you toggle this back.':'Scopes literally every tab — Accounts &amp; Risk, Engagement, Journey, Pulse, Performance — to just the 10 pilot accounts.'}</span>
     </div>
     ${quarterToggleHtml(gSel,'setGlobalQYear','setGlobalQQ')}
   </div>
-  <div class="kpis">${kpis.map(k=>`<div class="kpi clickable${/at risk/i.test(k[0])?' accent':''}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
+  <div class="kpis kpis-8col">${kpis.map(k=>`<div class="kpi clickable${/at risk/i.test(k[0])?' accent':''}" onclick="setTab('${k[3]}')" title="Go to ${esc(TAB_LABELS[k[3]]||k[3])}"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   <div class="grid2">
     <div class="card"><h3>Total Contract Value by team</h3><div class="chartbox"><canvas id="cTeam"></canvas></div></div>
     <div class="card"><h3>Book health distribution</h3><div class="chartbox"><canvas id="cHealth"></canvas></div>
@@ -4271,8 +4338,10 @@ function viewOverview(accts){
     </div>
   </div>
   <div class="card"><h3>Top risk-weighted accounts</h3>
-    <table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Annualized Revenue</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th><th class="num">ARR at risk</th></tr></thead><tbody>
-    ${topRisk.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td></tr>`).join('')}
+    <table class="table-compact">
+    <colgroup><col style="width:16%"><col style="width:9%"><col style="width:8%"><col style="width:8%"><col style="width:5%"><col style="width:10%"><col style="width:17%"><col style="width:17%"><col style="width:10%"></colgroup>
+    <thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Annualized Revenue</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th><th class="num">ARR at risk</th></tr></thead><tbody>
+    ${topRisk.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthWithTier(a.health,a.tier)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td></tr>`).join('')}
     </tbody></table>
   </div>`;
 }
@@ -4313,13 +4382,13 @@ function riskTriggerBreakdown(scopedAccts){
 }
 // Donut + horizontal bar over every open trigger type, color-coded, same
 // visual language as the NPS/CSAT donut+bar pages.
-const RISK_ESC_CHART_COLORS=['#d64545','#d4890a','#3d6bd6','#8a5fd6','#3ddc97','#9a9ba8','#e0a3d0','#5fb8d6','#c9a63d','#7a8fa6','#b56ad6'];
 function drawRiskEscalationCharts(accts){
   const scopedAccts = riskTest10 ? STATE.accounts.filter(a=>TEST10_ACCOUNTS.includes(a.name)) : accts;
-  const breakdown=riskTriggerBreakdown(scopedAccts).filter(b=>b.count>0);
+  const rawBreakdown=riskTriggerBreakdown(scopedAccts).filter(b=>b.count>0);
   destroyChartKey('riskEscDonut'); destroyChartKey('riskEscBar');
-  if(!breakdown.length) return;
-  const colors=breakdown.map((b,i)=>RISK_ESC_CHART_COLORS[i%RISK_ESC_CHART_COLORS.length]);
+  if(!rawBreakdown.length) return;
+  const {list:breakdown,hasOther}=foldToOther(rawBreakdown,8);
+  const colors=categoricalPalette(breakdown.length,hasOther);
   const dEl=$('#riskEscDonut');
   if(dEl) charts.riskEscDonut=new Chart(dEl,{type:'doughnut',data:{labels:breakdown.map(b=>b.label),datasets:[{data:breakdown.map(b=>b.count),backgroundColor:colors,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})});
   const bEl=$('#riskEscBar');
@@ -4351,15 +4420,15 @@ function drawOverviewCharts(accts){
   if(kids.length){ groups=kids.map(k=>({label:shortName(k.name),arr:rollup(accountsUnder(k.id)).arr,risk:rollup(accountsUnder(k.id)).risk})); }
   else { const byOwner={}; accts.forEach(a=>{ (byOwner[a.ownerName]=byOwner[a.ownerName]||{label:a.ownerName,arr:0,risk:0}); byOwner[a.ownerName].arr+=a.renewalAmount; byOwner[a.ownerName].risk+=a.riskARR;}); groups=Object.values(byOwner); }
   groups.sort((a,b)=>b.arr-a.arr); groups=groups.slice(0,8);
-  const barMain=window.AXON_THEME?'#2a7de1':'#5ec8ff';
-  const barRisk=window.AXON_THEME?'#d64545':'#ff6b6b';
+  const barMain=chartHue('blue');
+  const barRisk=chartHue('red');
   const radius=window.AXON_THEME?0:5;
   const t=$('#cTeam'); if(t){ charts.team=new Chart(t,{type:'bar',data:{labels:groups.map(g=>g.label),datasets:[
     {label:'Total Contract Value',data:groups.map(g=>Math.round(g.arr)),backgroundColor:barMain,borderRadius:radius},
     {label:'ARR at risk',data:groups.map(g=>Math.round(g.risk)),backgroundColor:barRisk,borderRadius:radius}]},
     options:chartBaseOptions({moneyTicks:true})}); }
   const r=rollup(accts);
-  const hc=window.AXON_THEME?['#1a9e5c','#d4890a','#d64545']:['#3ddc97','#ffb84d','#ff6b6b'];
+  const hc=[chartHue('green'),chartHue('amber'),chartHue('red')];
   const h=$('#cHealth'); if(h){ charts.health=new Chart(h,{type:'doughnut',data:{labels:['Healthy','Watch','At risk'],datasets:[{data:[r.green,r.amber,r.red],backgroundColor:hc,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',legend:false,noScales:true})}); }
 }
 
@@ -4371,7 +4440,7 @@ function destroyAcctCharts(){ Object.values(acctCharts).forEach(c=>{try{c.destro
 function drawAcctSyncCharts(a){
   destroyAcctCharts();
   const radius=window.AXON_THEME?0:5;
-  const green=window.AXON_THEME?'#1a9e5c':'#3ddc97', red=window.AXON_THEME?'#d64545':'#ff6b6b';
+  const green=chartHue('green'), red=chartHue('red');
   const hEl=$('#acctHealthChart');
   if(hEl){
     const comps=a.comps||[];
@@ -4382,7 +4451,7 @@ function drawAcctSyncCharts(a){
   }
   const cEl=$('#acctCaseChart');
   if(cEl && a.lifeCases!=null && a.lifeCases>0){
-    const barMain=window.AXON_THEME?'#2a7de1':'#5ec8ff';
+    const barMain=chartHue('blue');
     acctCharts.cases=new Chart(cEl,{type:'bar',data:{labels:['All cases','High/urgent'],datasets:[
       {label:'Lifetime',data:[a.lifeCases||0,a.lifeHigh||0],backgroundColor:barMain,borderRadius:radius},
       {label:'Currently open',data:[a.openCases||0,a.highCases||0],backgroundColor:red,borderRadius:radius}
@@ -4392,7 +4461,7 @@ function drawAcctSyncCharts(a){
 function drawAcctDealsChart(deals){
   const dEl=$('#acctDealsChart'); if(!dEl||!deals||!deals.length) return;
   const radius=window.AXON_THEME?0:5;
-  const barMain=window.AXON_THEME?'#2a7de1':'#5ec8ff';
+  const barMain=chartHue('blue');
   const chrono=[...deals].reverse();
   try{acctCharts.deals&&acctCharts.deals.destroy()}catch(e){}
   acctCharts.deals=new Chart(dEl,{type:'bar',data:{labels:chrono.map(o=>o.CloseDate||''),datasets:[{label:'Deal amount',data:chrono.map(o=>o.Amount||0),backgroundColor:barMain,borderRadius:radius}]},options:chartBaseOptions({moneyTicks:true,legend:false})});
@@ -4400,7 +4469,7 @@ function drawAcctDealsChart(deals){
 function drawAcctProdChart(fams){
   const pEl=$('#acctProdChart'); if(!pEl||!fams||!fams.length) return;
   const radius=window.AXON_THEME?0:5;
-  const barViolet=window.AXON_THEME?'#7a5af8':'#c08bff';
+  const barViolet=chartHue('violet');
   try{acctCharts.prod&&acctCharts.prod.destroy()}catch(e){}
   const opts=chartBaseOptions({legend:false}); opts.indexAxis='y';
   // Same axis-type swap as the NPS bar chart: indexAxis:'y' makes y the
@@ -4456,7 +4525,6 @@ function viewExecReport(accts){
   const prodMax=Math.max(1,...prodEntries.map(([,n])=>n));
   const bar=(label,n,max)=>`<div class="rollrow"><div class="rl">${esc(label)}</div><div class="rbarwrap"><div class="rbar" style="width:${max?Math.round(n/max*100):0}%"></div></div><div class="rn">${n}</div></div>`;
   return `<div class="card"><h3>Executive report <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
-  <p class="mini" style="line-height:1.7">Sigma today rolls up CS activity — TAP notes, other CTA activity, and logged timeline/activity — into leadership reporting. This app has no Sigma/warehouse credentials in this environment, so it can't push there directly yet — but every number below is computed live from the same underlying signals (renewals, TAP, CTAs, escalations, logged activity), so it can stand in for that report today. Use <b>Export CSV</b> as the practical bridge into Sigma or any other BI tool until a real pipeline exists.</p>
   <div class="kpis" style="margin:14px 0">
     <div class="kpi"><div class="l">Total Contract Value</div><div class="v">${fmtMoney(r.arr)}</div><div class="d">${r.renewals} open renewals</div></div>
     <div class="kpi accent"><div class="l">ARR at risk</div><div class="v">${fmtMoney(r.risk)}</div><div class="d">${Math.round(r.risk/(r.arr||1)*100)}% of book</div></div>
@@ -4470,16 +4538,29 @@ function viewExecReport(accts){
     <span class="mini">${rows.length} account rows — renewal, health, cases, NPS, CTA/TAP/escalation counts and logged-activity volume per account.</span>
   </div>
   </div>
-  <div class="card"><h3>Escalations by reason &amp; product <span class="hint">see Escalations tab for the full analytics view</span></h3>
-  <div class="grid2">
-    <div><p class="mini" style="margin-bottom:8px"><b>By reason code</b></p>${reasonEntries.length?reasonEntries.map(([k,n])=>bar(k,n,reasonMax)).join(''):'<p class="mini">Nothing tagged yet.</p>'}</div>
-    <div><p class="mini" style="margin-bottom:8px"><b>By product</b></p>${prodEntries.length?prodEntries.map(([k,n])=>bar(k,n,prodMax)).join(''):'<p class="mini">Nothing tagged yet.</p>'}</div>
-  </div>
-  </div>
+  ${(()=>{
+    // A lone "Untagged" bucket isn't a real breakdown - it just means no one
+    // has tagged an escalation yet. Show a pointer to actually do that instead
+    // of a bar chart whose only bar says "Untagged".
+    const onlyUntagged=es=>es.length===1 && es[0][0]==='Untagged';
+    const reasonBody=!reasonEntries.length?'<p class="mini">No escalations in scope.</p>'
+      :onlyUntagged(reasonEntries)?'<p class="mini">None tagged with a reason yet — tag them from the Escalations tab.</p>'
+      :reasonEntries.map(([k,n])=>bar(k,n,reasonMax)).join('');
+    const prodBody=!prodEntries.length?'<p class="mini">No escalations in scope.</p>'
+      :onlyUntagged(prodEntries)?'<p class="mini">None tagged with a product yet — tag them from the Escalations tab.</p>'
+      :prodEntries.map(([k,n])=>bar(k,n,prodMax)).join('');
+    if(!reasonEntries.length && !prodEntries.length) return '';
+    return `<div class="card"><h3>Escalations by reason &amp; product</h3>
+    <div class="grid2">
+      <div><p class="mini" style="margin-bottom:8px"><b>By reason code</b></p>${reasonBody}</div>
+      <div><p class="mini" style="margin-bottom:8px"><b>By product</b></p>${prodBody}</div>
+    </div>
+    </div>`;
+  })()}
   <div class="card"><h3>Account-level detail <span class="hint">${rows.length} accounts in scope</span></h3>
   <div class="searchbar"><input id="xrsearch" placeholder="Filter accounts…" oninput="filterTable(this,'xrtbl')"></div>
   <table id="xrtbl"><thead><tr><th>Account</th><th>Owner</th><th>Segment</th><th>Tier</th><th class="num">Health</th><th class="num">Total Contract Value</th><th class="num">ARR at risk</th><th class="num">Open CTAs</th><th>TAP status</th><th>Escalation</th><th class="num">Logged activity</th></tr></thead><tbody>
-  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b> <span class="tag ${hueFor(row.State||'—')}">${esc(row.State||'—')}</span></td><td>${ownerCell(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${row.Health===''?'—':row.Health}</td><td class="num">${fmtMoney(row.TotalContractValue)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${esc(row.TapStatus||'—')}</td><td>${esc(row.EscalationStatus||'—')}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
+  ${rows.map(row=>`<tr onclick="openAcct('${row.AccountId}')"><td><b>${esc(row.Account)}</b> <span class="tag ${hueFor(row.State||'—')}">${esc(row.State||'—')}</span></td><td>${ownerCell(row.Owner)}</td><td>${esc(row.Segment)}</td><td>${esc(row.Tier)}</td><td class="num">${healthCell(row.Health===''?null:row.Health)}</td><td class="num">${fmtMoney(row.TotalContractValue)}</td><td class="num">${fmtMoney(row.ARRAtRisk)}</td><td class="num">${row.OpenCTAs}</td><td>${tapStatusPill({tapStatus:row.TapStatus})}</td><td>${row.EscalationStatus?statusPill(row.EscalationStatus):'<span class="pill p-gray">None</span>'}</td><td class="num">${row.LoggedActivityCount}</td></tr>`).join('')}
   </tbody></table>
   </div>`;
 }
@@ -4552,7 +4633,7 @@ function viewHierarchy(){
 }
 function accountTable(accts){
   return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th class="num">Annualized Revenue</th><th class="num">Close</th><th class="num">Cases</th><th>CSAT</th><th>Health</th><th>Tier</th></tr></thead><tbody>
-  ${accts.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td><td>${opportunityPill(a)}</td></tr>`).join('')}
+  ${accts.map(a=>`<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${healthWithTier(a.health,a.tier)}</td><td>${opportunityPill(a)}</td></tr>`).join('')}
   </tbody></table>`;
 }
 
@@ -4591,7 +4672,7 @@ function renewTableHead(){
 }
 function renewRowHtml(a){
   const st=a.opps[0]?a.opps[0].stage:''; const late=a.dclose<=90&&EARLY.has(st);
-  return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${esc(st)}${late?' <span class="pill p-red">behind</span>':''}</td><td class="num">${a.dclose>9000?'—':a.dclose}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td class="num">${readyPill(a.readiness)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td><td>${healthCell(a.health)}</td></tr>`;
+  return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${esc(st)}${late?' <span class="pill p-red">behind</span>':''}</td><td class="num">${a.dclose>9000?'—':a.dclose}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${fmtMoney(a.ltv)}</td><td class="num">${a.openCases}${a.highCases?` <span class="pill p-red">${a.highCases}!</span>`:''}</td><td>${csatPill(a)}</td><td>${readyPill(a.readiness)}</td><td class="num"><b>${fmtMoney(a.riskARR)}</b></td><td>${healthCell(a.health)}</td></tr>`;
 }
 function viewRenewals(accts){
   if(renewSort.k==='tier'){
@@ -4695,7 +4776,7 @@ function drawEscTrendChart(accts){
   Object.values(charts).forEach(c=>{try{c.destroy()}catch(e){}}); charts={};
   const an=escAnalytics(accts);
   const el=$('#cEscTrend'); if(!el) return;
-  const openedColor=window.AXON_THEME?'#d64545':'#ff6b6b', resolvedColor=window.AXON_THEME?'#1a9e5c':'#3ddc97';
+  const openedColor=chartHue('red'), resolvedColor=chartHue('green');
   charts.escTrend=new Chart(el,{type:'bar',data:{labels:an.weekly.map(w=>w.label),datasets:[
     {label:'Opened',data:an.weekly.map(w=>w.opened),backgroundColor:openedColor,borderRadius:window.AXON_THEME?0:5},
     {label:'Resolved',data:an.weekly.map(w=>w.resolved),backgroundColor:resolvedColor,borderRadius:window.AXON_THEME?0:5}
@@ -4916,7 +4997,7 @@ function viewPlans(accts){
     ['Plans pending',pending.length,'not yet generated this cycle','pending'],
     ['Plans completed',completed.length,'all milestones done','completed'],
   ];
-  let html=`<div class="card"><h3>Success Plans <span class="hint">quarterly cycle — same cadence as the quarterly customer survey</span></h3>
+  let html=`<div class="card"><h3>Success Plans</h3>
   ${quarterToggleHtml(sel,'setPlansYear','setPlansQ')}
   <div class="kpis" style="margin-bottom:14px">${kpis.map(k=>`<div class="kpi clickable${k[3]&&plansKpiFilter===k[3]?' selected':''}" onclick="setPlansKpi(${k[3]?`'${k[3]}'`:'null'})"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   ${plansKpiFilter?`<p class="mini" style="margin:-6px 0 6px">Filtered to <b>${esc(plansKpiFilter)}</b> · <a href="#" onclick="setPlansKpi('${plansKpiFilter}');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></p>`:''}
@@ -5366,16 +5447,16 @@ function viewWork(accts){
   const rows=list=>`<table><thead><tr><th>Priority action</th><th>Account</th><th>Owner</th><th class="num">Total Contract Value</th><th>Health</th></tr></thead><tbody>
     ${list.slice(0,50).map(it=>`<tr onclick="${it.ctaId?`openEngagementCta('${it.ctaId}')`:it.planId?`openPlan('${it.planId}')`:`openAcct('${it.a.id}')`}"><td><span class="pill ${it.p<=2?'p-red':it.p===3?'p-amber':'p-gray'}">${esc(it.tag)}</span> ${esc(it.label)}</td><td><b>${esc(it.a.name)}</b> ${stateTag(it.a)}</td><td>${ownerCell(it.a.ownerName)}</td><td class="num">${fmtMoney(it.a.renewalAmount)}</td><td>${healthCell(it.a.health)}</td></tr>`).join('')}
     </tbody></table>`;
-  const section=(title,hint,list)=> list.length?`<h3 style="margin-top:18px">${esc(title)} <span class="hint">${esc(hint)}</span></h3>${rows(list)}`:'';
+  const section=(title,list)=> list.length?`<h3 style="margin-top:18px">${esc(title)}</h3>${rows(list)}`:'';
   return `<div class="card"><h3>Prioritized worklist <span class="hint">${items.length} actions across scope</span></h3>
   <div class="kpis" style="margin-bottom:4px">
-    <div class="kpi"><div class="l">Overdue</div><div class="v" style="color:var(--red)">${overdue.length}</div><div class="d">already past due — clear these first</div></div>
-    <div class="kpi"><div class="l">New</div><div class="v" style="color:var(--amber)">${freshItems.length}</div><div class="d">surfaced in the last day or two</div></div>
-    <div class="kpi"><div class="l">Upcoming</div><div class="v">${upcoming.length}</div><div class="d">on the radar, not yet urgent</div></div>
+    <div class="kpi"><div class="l">Overdue</div><div class="v" style="color:var(--red)">${overdue.length}</div></div>
+    <div class="kpi"><div class="l">New</div><div class="v" style="color:var(--amber)">${freshItems.length}</div></div>
+    <div class="kpi"><div class="l">Upcoming</div><div class="v">${upcoming.length}</div></div>
   </div>
-  ${section('Overdue','clear these first',overdue)}
-  ${section('New','freshly surfaced',freshItems)}
-  ${section('Upcoming',"worth getting ahead of",upcoming)}
+  ${section('Overdue',overdue)}
+  ${section('New',freshItems)}
+  ${section('Upcoming',upcoming)}
   ${items.length?'':'<p class="mini">Clear queue — nothing urgent in this scope.</p>'}</div>`;
 }
 
@@ -5421,7 +5502,7 @@ function triggerSourcesTableHtml(){
     const routesTo=cat==='escalation'?'Escalation':(CTA_CATEGORY_LABELS[cat]||'—')+' CTA';
     return `<tr><td><b>${esc(RISK_TRIGGER_LABELS[k])}</b></td><td>${esc(src.object)}</td><td class="mini">${esc(src.field)}</td><td><span class="pill ${cat==='escalation'?'p-red':'p-gray'}">${esc(routesTo)}</span></td></tr>`;
   }).join('');
-  return `<div class="card"><h3>Trigger sources <span class="hint">every trigger type, its real data source, and where it routes</span></h3>
+  return `<div class="card"><h3>Trigger sources</h3>
     <table><thead><tr><th>Trigger</th><th>Source object</th><th>Field / condition</th><th>Routes to</th></tr></thead><tbody>${rows}</tbody></table>
   </div>`;
 }
@@ -5465,18 +5546,18 @@ function objectIntegrationsHtml(){
     {name:'OpportunityLineItem',fields:'Product2.Family, Product2.Name, TotalPrice, Quantity',note:'Products purchased card.'},
     {name:'Case',fields:'Priority, IsEscalated (lifetime counts)',note:'Customer sentiment card — a derived proxy, not a true Salesforce sentiment field.'},
   ];
-  return `<div class="card"><h3>Object integrations <span class="hint">every Salesforce object this app actually reads, grouped by where it shows up</span></h3>
-    <p class="mini" style="margin-bottom:10px">Foundational — read everywhere an account or owner appears:</p>
-    ${foundational.map(objRow).join('')}
-    <div class="disco-grid" style="margin-top:14px">
+  const plainField=label=>`<div class="disco-field">
+        <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:6px">${esc(label)}</label>
+        ${(label==='Foundational'?foundational:acct360).map(objRow).join('')}
+      </div>`;
+  return `<div class="card"><h3>Object integrations</h3>
+    <div class="disco-grid">
+      ${plainField('Foundational')}
       ${sections.map(([catId,objs])=>`<div class="disco-field">
         <label class="mini" style="font-weight:700;color:var(--ink);display:flex;align-items:center;gap:6px;margin-bottom:6px"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${catIcon(catId)}</svg>${esc(catLabel(catId))}</label>
         ${objs.map(objRow).join('')}
       </div>`).join('')}
-      <div class="disco-field">
-        <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin-bottom:6px">Account 360 <span class="hint">opened from any account list</span></label>
-        ${acct360.map(objRow).join('')}
-      </div>
+      ${plainField('Account 360')}
     </div>
   </div>`;
 }
@@ -5498,7 +5579,7 @@ function viewModel(accts){
   <p class="mini" style="margin-top:14px">Current scope re-scored: <b>${r.green}</b> healthy · <b>${r.amber}</b> watch · <b>${r.red}</b> at risk · avg <b>${r.health==null?'—':r.health}</b>.</p>
   <p class="mini" style="margin-top:10px;color:var(--muted)">Note: sentiment and CSAT are computed separately and are not affected by these health weights.</p>
   </div>
-  <div class="card"><h3>Adoption thresholds <span class="hint">what counts as adopting vs. not, used on Usage &amp; Adoption</span></h3>
+  <div class="card"><h3>Adoption thresholds</h3>
     <div class="row-actions" style="margin-top:8px;flex-wrap:wrap;gap:14px">
       <label class="mini">"Adopting" at/above %<br><input type="number" min="0" max="100" value="${adoptionCfg.adoptingPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('adoptingPct',this.value)"></label>
       <label class="mini">"Not adopting" below %<br><input type="number" min="0" max="100" value="${adoptionCfg.atRiskPct}" style="width:80px;margin-top:4px;border:1px solid var(--line);padding:6px 8px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)" onchange="setAdoptionCfg('atRiskPct',this.value)"></label>
@@ -5751,7 +5832,7 @@ function csmProfilePageHtml(name){
     </div>
     <div class="card" style="box-shadow:none"><h3>Book of accounts</h3>
     <table><thead><tr><th>Account</th><th class="num">Total Contract Value</th><th class="num">Close</th><th>CSAT</th><th>NPS</th><th>Health</th></tr></thead><tbody>
-    ${sortedAccts.map(a=>`<tr onclick="openAcct('${a.id}')" style="cursor:pointer"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthCell(a.health)} ${tierPill(a.tier)}</td></tr>`).join('')}
+    ${sortedAccts.map(a=>`<tr onclick="openAcct('${a.id}')" style="cursor:pointer"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td class="num">${fmtMoney(a.renewalAmount)}</td><td class="num">${a.dclose>9000?'—':a.dclose+'d'}</td><td>${csatPill(a)}</td><td>${npsPill(a)}</td><td>${healthWithTier(a.health,a.tier)}</td></tr>`).join('')}
     </tbody></table>
     </div>
   </div>`;
@@ -5774,7 +5855,7 @@ function viewScorecard(accts){
 
   <div class="card"><h3>All CSMs in scope</h3>
   <table><thead><tr><th>CSM</th><th class="num">Accounts</th><th class="num">Engagement</th><th class="num">Insights (90d)</th><th class="num">NPS</th><th class="num">Renewal (organic)</th><th class="num">Expansion</th><th class="num">Transactional</th><th class="num">Total growth</th><th class="num">Overdue</th><th></th></tr></thead><tbody>
-  ${rows.map(o=>`<tr onclick="openCsmProfile('${attrStr(o.name)}')" style="cursor:pointer"><td>${ownerCell(o.name)}</td><td class="num">${o.n}</td><td class="num">${o.engagementPct}%${targetBar(o.engagementPct/(scoreTargets.engagementPct||1)*100)}</td><td class="num">${o.insights}${targetBar(o.insights/(scoreTargets.insightsPerCsm||1)*100)}</td><td class="num">${npsRollupPill(o.npsR)}</td><td class="num">${fmtMoney(o.growth.Renewal)}</td><td class="num">${fmtMoney(o.growth.Expansion)}</td><td class="num">${fmtMoney(o.growth.Transactional)}</td><td class="num"><b>${fmtMoney(o.growthTotal)}</b>${targetBar(o.growthTotal/(scoreTargets.growthPerCsm||1)*100)}</td><td class="num">${o.stale.length?`<span class="pill clickable ${o.stale[0].overdue>90?'p-red':'p-amber'}" onclick="event.stopPropagation();openCsmImprove('${attrStr(o.name)}')" title="Open improve plan">${o.stale.length}</span>`:'<span class="pill p-gray">0</span>'}</td><td>${o.needsImprove||o.steps.length?`<button class="btn ${o.needsImprove?'primary':'sm'} sm" onclick="event.stopPropagation();openCsmImprove('${attrStr(o.name)}')">${o.needsImprove?'Improve':'Plan'}</button>`:`<span class="pill p-green">On track</span>`}</td></tr>`).join('')}
+  ${rows.map(o=>`<tr onclick="openCsmProfile('${attrStr(o.name)}')" style="cursor:pointer"><td>${ownerCell(o.name)}</td><td class="num">${o.n}</td><td class="num">${o.engagementPct}%${targetBar(o.engagementPct/(scoreTargets.engagementPct||1)*100)}</td><td class="num">${o.insights}${targetBar(o.insights/(scoreTargets.insightsPerCsm||1)*100)}</td><td>${npsRollupPill(o.npsR)}</td><td class="num">${fmtMoney(o.growth.Renewal)}</td><td class="num">${fmtMoney(o.growth.Expansion)}</td><td class="num">${fmtMoney(o.growth.Transactional)}</td><td class="num"><b>${fmtMoney(o.growthTotal)}</b>${targetBar(o.growthTotal/(scoreTargets.growthPerCsm||1)*100)}</td><td class="num">${o.stale.length?`<span class="pill clickable ${o.stale[0].overdue>90?'p-red':'p-amber'}" onclick="event.stopPropagation();openCsmImprove('${attrStr(o.name)}')" title="Open improve plan">${o.stale.length}</span>`:'<span class="pill p-gray">0</span>'}</td><td>${o.needsImprove||o.steps.length?`<button class="btn ${o.needsImprove?'primary':'sm'} sm" onclick="event.stopPropagation();openCsmImprove('${attrStr(o.name)}')">${o.needsImprove?'Improve':'Plan'}</button>`:`<span class="pill p-green">On track</span>`}</td></tr>`).join('')}
   </tbody></table>
   ${rows.length?'':'<p class="mini">No CSMs with accounts in this scope.</p>'}
   <p class="mini" style="margin-top:12px;color:var(--muted)">Below-target metrics generate an improve plan with concrete next steps (book outreach, log insights, advance renewals, save NPS detractors, clear overdue work). Click <b>Improve</b> for the full plan, or run the top action from the attention list above.</p>
@@ -6163,7 +6244,7 @@ function viewCsEmails(accts){
     .sort((a,b)=>new Date(b.t)-new Date(a.t));
   const last30=rows.filter(r=>r.t && (Date.now()-new Date(r.t).getTime())<=30*864e5).length;
   const acctsCovered=new Set(rows.map(r=>r.acctId).filter(Boolean)).size;
-  return `<div class="card"><h3>Customer Success Emails <span class="hint">relationship-building emails sent via Predictive Insights / Success Plans</span></h3>
+  return `<div class="card"><h3>Customer Success Emails</h3>
     <div class="kpis" style="margin:14px 0">
       <div class="kpi clickable" onclick="scrollToSection('csEmailMatrix')"><div class="l">Total sent</div><div class="v">${rows.length}</div><div class="d">this cadence only</div></div>
       <div class="kpi clickable" onclick="scrollToSection('csEmailMatrix')"><div class="l">Logged last 30 days</div><div class="v">${last30}</div><div class="d">recent activity</div></div>
@@ -6213,7 +6294,7 @@ function ceProgressCounts(list){
     resolved: list.filter(c=>engagementCtaEffectiveStatus(c)==='done').length,
   };
 }
-const CE_PROGRESS_COLORS=['#d64545','#d4890a','#1a9e5c'];
+const CE_PROGRESS_COLORS=[chartHue('red'),chartHue('amber'),chartHue('green')];
 // Client Engagement itself is now a pure statistical landing page, top to
 // bottom: (1) Escalations vs Active CTAs split, next to (2) a combined
 // Active/Pending/Resolved donut across both; (3) below that, the same
@@ -6237,7 +6318,6 @@ function viewClientEngagement(accts){
       <div class="card" style="box-shadow:none"><h3>Escalations only</h3><div class="chartbox"><canvas id="ceEscProgDonut"></canvas></div></div>
       <div class="card" style="box-shadow:none"><h3>Active CTAs only</h3><div class="chartbox"><canvas id="ceCtaProgDonut"></canvas></div></div>
     </div>
-    <div class="card" style="box-shadow:none;margin-top:12px"><h3>All trigger types</h3><div class="chartbox"><canvas id="ceTriggerDonut"></canvas></div></div>
     <div class="kpis" style="margin-top:14px">${breakdown.length?breakdown.map(b=>{
       const isEsc=CTA_CATEGORY_BY_TRIGGER[b.key]==='escalation';
       return `<div class="kpi clickable" onclick="goToTriggerType('${b.key}')"><div class="l">${esc(b.label)}</div><div class="v">${b.count}</div><div class="d">${isEsc?'→ Escalations':'→ Active CTAs'}</div></div>`;
@@ -6251,20 +6331,17 @@ function drawClientEngagementCharts(accts){
   const allRecords=engagementCtasFor(accts).filter(c=>c.status!=='dismissed');
   const escRecords=allRecords.filter(c=>c.category==='escalation');
   const ctaRecords=allRecords.filter(c=>c.category!=='escalation');
-  ['ceSplitDonut','ceTotalProgDonut','ceEscProgDonut','ceCtaProgDonut','ceTriggerDonut'].forEach(destroyChartKey);
+  ['ceSplitDonut','ceTotalProgDonut','ceEscProgDonut','ceCtaProgDonut'].forEach(destroyChartKey);
   const progDonut=(id,list)=>{
     const el=$('#'+id); if(!el) return;
     const p=ceProgressCounts(list);
     charts[id]=new Chart(el,{type:'doughnut',data:{labels:['Active','Pending','Resolved'],datasets:[{data:[p.open,p.pending,p.resolved],backgroundColor:CE_PROGRESS_COLORS,borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})});
   };
   const sEl=$('#ceSplitDonut');
-  if(sEl) charts.ceSplitDonut=new Chart(sEl,{type:'doughnut',data:{labels:['Escalations','Active CTAs'],datasets:[{data:[escRecords.filter(ceIsOpenOrInProgress).length,ctaRecords.filter(ceIsOpenOrInProgress).length],backgroundColor:['#d64545','#3d6bd6'],borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})});
+  if(sEl) charts.ceSplitDonut=new Chart(sEl,{type:'doughnut',data:{labels:['Escalations','Active CTAs'],datasets:[{data:[escRecords.filter(ceIsOpenOrInProgress).length,ctaRecords.filter(ceIsOpenOrInProgress).length],backgroundColor:[chartHue('red'),chartHue('blue')],borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'62%',noScales:true})});
   progDonut('ceTotalProgDonut',allRecords);
   progDonut('ceEscProgDonut',escRecords);
   progDonut('ceCtaProgDonut',ctaRecords);
-  const breakdown=liveTriggerBreakdown(accts).filter(b=>b.count>0);
-  const tEl=$('#ceTriggerDonut');
-  if(tEl && breakdown.length) charts.ceTriggerDonut=new Chart(tEl,{type:'doughnut',data:{labels:breakdown.map(b=>b.label),datasets:[{data:breakdown.map(b=>b.count),backgroundColor:breakdown.map((b,i)=>RISK_ESC_CHART_COLORS[i%RISK_ESC_CHART_COLORS.length]),borderColor:chartBorder(),borderWidth:3}]},options:chartBaseOptions({cutout:'55%',noScales:true})});
 }
 // ---- CTA detail view: reuses the same dated/expandable timeline pattern as
 // the Accounts & Risk kanban card, so both sections feel like one system. ----
@@ -6969,7 +7046,7 @@ function viewUsage(accts){
   <div class="card"><h3>Accounts by adoption <span class="hint">lowest adoption first${usageKpiFilter?' · filtered':''}</span></h3>
   <div class="searchbar"><input id="usearch" placeholder="Filter accounts…" oninput="filterTable(this,'utbl')"></div>
   <table id="utbl"><thead><tr><th>Account</th><th>Owner</th><th class="num">Adoption</th><th class="num">Active / Licensed</th><th class="num">Trend</th><th class="num">To goal</th><th class="num">Synced</th></tr></thead><tbody>
-  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
+  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td>${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
   </tbody></table>
   ${sorted.length?'':'<p class="mini">No accounts with usage data match this filter.</p>'}
   <p class="mini" style="margin-top:12px;color:var(--muted)">Source: product-analytics Snowflake → Sigma, modeled as a periodic export. Swap in the live connection later — nothing above needs to change since it reads the same <code>ProductUsage__c</code> shape.</p>
@@ -7016,7 +7093,7 @@ function viewTap(accts){
     ['Due within 90 days',dueSoon.length,'get ahead of the refresh','duesoon'],
     ['Tracked TAP contracts',tracked.length,'of '+accts.length+' accounts with hardware on file',null],
   ];
-  return `<div class="card"><h3>TAP Refreshes <span class="hint">due at the 2.5-year mark of a 5-year contract</span></h3>
+  return `<div class="card"><h3>TAP Refreshes</h3>
   <p class="mini">Tracks every account with Axon hardware (body cameras, TASER, fleet, interview room, cartridges, drones) on file. TAP refresh is a distinct hardware-lifecycle motion from a software renewal — each account below gets a standardized checklist so nothing falls through between "it's due" and "it's done."</p>
   <div class="kpis" style="margin:14px 0">${kpis.map(k=>`<div class="kpi clickable${k[3]==='overdue'?' risk-red':k[3]==='duesoon'?' risk-amber':''}${k[3]&&tapKpiFilter===k[3]?' selected':''}" onclick="setTapKpi(${k[3]?`'${k[3]}'`:'null'})"><div class="l">${k[0]}</div><div class="v">${k[1]}</div><div class="d">${esc(k[2])}</div></div>`).join('')}</div>
   ${tapKpiFilter?`<p class="mini" style="margin:-4px 0 12px">Filtered to <b>${tapKpiFilter==='overdue'?'overdue':'due within 90 days'}</b> · <a href="#" onclick="setTapKpi('${tapKpiFilter}');return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear filter</a></p>`:''}
@@ -7344,8 +7421,8 @@ function acctPageHtml(a){
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Health breakdown</h3>
       <div class="chartbox" style="height:210px;margin-bottom:14px"><canvas id="acctHealthChart"></canvas></div>
       <div class="comp"><div><b>Base</b></div><div class="pos">100</div>${compRows}<div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>Score</b></div><div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>${a.health}</b></div></div></div>
-    </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Open renewals</h3><table><tbody>${opps.map(o=>`<tr style="cursor:default"><td>${esc(o.name)}</td><td>${esc(o.stage)}</td><td class="num">${fmtMoney(o.amount)}</td><td class="num">${esc(o.close)}</td></tr>`).join('')}</tbody></table></div>
+    </div>
   </div>`;
 }
 function showOverlay(){ const o=$('#overlay'); if(o) o.classList.add('show'); const s=$('#sheet'); if(s&&s.parentElement) s.parentElement.scrollTop=0; wrapWideTables(); }
