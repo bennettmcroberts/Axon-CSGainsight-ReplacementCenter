@@ -8,9 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger("reply_watch")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    # Explicit handler, independent of uvicorn's own logging config (which
+    # doesn't attach anything to the root logger by default) - otherwise
+    # these INFO-level messages would silently never reach the terminal.
+    _reply_watch_handler = logging.StreamHandler()
+    _reply_watch_handler.setFormatter(logging.Formatter("%(asctime)s [reply_watch] %(message)s", "%H:%M:%S"))
+    logger.addHandler(_reply_watch_handler)
+    logger.propagate = False
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -385,7 +397,13 @@ async def _reply_watch_poll_once():
     when ANTHROPIC_API_KEY is set - asks the model whether the reply actually
     means the CTA is resolved before marking it ready. No key configured =
     no automatic decision here; the file just waits for the manual
-    Claude-Code-in-the-loop path instead."""
+    Claude-Code-in-the-loop path instead.
+
+    Every state transition is logged (not just errors) - this is the one
+    piece of the demo that's otherwise invisible if it silently breaks (an
+    expired Gmail token, a Claude API hiccup), so the terminal running
+    uvicorn is a real fallback way to confirm "yes, a reply was actually
+    detected" even if something's wrong with the in-app flash."""
     if not gmail_configured():
         return
     pending = []
@@ -393,16 +411,20 @@ async def _reply_watch_poll_once():
         try:
             data = json.loads(f.read_text())
         except Exception:  # noqa: BLE001
+            logger.exception("reply_watch: could not read/parse %s", f)
             continue
         if data.get("status") == "pending":
             pending.append((f, data))
     if not pending:
         return
+    logger.info("reply_watch: %d pending watch(es), checking inbox", len(pending))
     try:
         inbox = list_recent_inbox(20)
-    except GmailUnavailable:
+    except GmailUnavailable as e:
+        logger.warning("reply_watch: Gmail unavailable this pass - %s", e)
         return
     for f, data in pending:
+        cta_id = data.get("ctaId") or f.stem
         sent_subject = re.sub(r"^(re|fwd):\s*", "", (data.get("sentSubject") or ""), flags=re.I).strip().lower()
         if not sent_subject:
             continue
@@ -414,9 +436,11 @@ async def _reply_watch_poll_once():
                 break
         if not match:
             continue
+        logger.info("reply_watch[%s]: matching reply found in inbox - subject %r", cta_id, match.get("subject"))
         try:
             body = get_message_body(match["id"])
-        except GmailUnavailable:
+        except GmailUnavailable as e:
+            logger.warning("reply_watch[%s]: could not fetch message body - %s", cta_id, e)
             continue
         if settings.anthropic_configured:
             # Flip to "reading" the instant a matching reply is found, before
@@ -426,24 +450,29 @@ async def _reply_watch_poll_once():
             # the chevron sees a real interim state instead of a blind jump.
             data["status"] = "reading"
             f.write_text(json.dumps(data, indent=2))
+            logger.info("reply_watch[%s]: status -> reading, asking Claude to interpret", cta_id)
             try:
                 decision = interpret_reply(data.get("accountName", ""), data.get("sentSubject", ""), body)
             except Exception as e:  # noqa: BLE001
+                logger.exception("reply_watch[%s]: interpret_reply failed", cta_id)
                 decision = {"resolved": False, "note": f"(AI interpretation failed: {e})"}
         else:
             # No model configured - can't judge intent automatically, leave pending for the manual path.
+            logger.info("reply_watch[%s]: reply found but no ANTHROPIC_API_KEY - leaving pending for manual path", cta_id)
             continue
         if decision.get("resolved"):
             data["status"] = "ready"
             data["note"] = decision.get("note", "")
             data["replySnippet"] = match.get("snippet", "")
             f.write_text(json.dumps(data, indent=2))
+            logger.info("reply_watch[%s]: status -> ready (resolved) - %s", cta_id, data["note"])
         else:
             # Not resolved yet (e.g. reply didn't actually confirm) - back to
             # pending so the next pass can re-check without getting stuck
             # showing "reading" forever.
             data["status"] = "pending"
             f.write_text(json.dumps(data, indent=2))
+            logger.info("reply_watch[%s]: status -> pending (not resolved yet) - %s", cta_id, decision.get("note"))
 
 
 async def _reply_watch_poller_loop():
@@ -451,8 +480,12 @@ async def _reply_watch_poller_loop():
         try:
             await _reply_watch_poll_once()
         except Exception:  # noqa: BLE001
-            pass  # best-effort background loop - never let one bad pass kill it
-        await asyncio.sleep(30)
+            # Best-effort background loop - never let one bad pass kill it,
+            # but log it (not silently swallow it) so a broken pass is
+            # actually visible in the server log instead of just never
+            # advancing past "pending" with no explanation.
+            logger.exception("reply_watch: unhandled error in poll pass")
+        await asyncio.sleep(5)
 
 
 @app.on_event("startup")

@@ -123,7 +123,7 @@ html[data-theme="dark"] .flyout-btn.active{background:rgba(255,230,0,.1)}
 .crumb .cur{color:var(--ink);font-weight:800}
 .scopebar .role{margin-left:auto;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em}
 
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:18px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:16px}
 .kpi{background:var(--panel);border:1px solid transparent;padding:18px;position:relative;border-radius:var(--radius-lg);
   box-shadow:var(--shadow-sm);transition:box-shadow .15s,transform .15s;overflow:hidden}
 .kpi:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
@@ -193,6 +193,8 @@ details.disc[open] summary::before{content:'▾ '}
 .card.acct-hd{background:none;box-shadow:none;border:none;padding:0 0 4px;margin-bottom:20px;border-bottom:1px solid var(--line-soft)}
 .card.acct-hd .hd{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:16px}
 .card.acct-hd .hd h2{margin:0;font-family:var(--font-ui);font-size:22px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.acct-facts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.acct-fact-owner{display:inline-flex;align-items:center;gap:4px}
 @media(max-width:900px){.acct-grid{grid-template-columns:1fr}}
 .tier-h{margin:0 0 8px;font-family:var(--font-ui);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
   display:flex;align-items:baseline;gap:8px;padding:8px 10px;background:var(--panel2);border-radius:var(--radius)}
@@ -279,7 +281,7 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .sheet .bd{padding:20px 22px}
 .x{border:1px solid var(--line);background:var(--panel2);width:32px;height:32px;cursor:pointer;font-size:15px;color:var(--muted);border-radius:var(--radius);transition:all .12s}
 .x:hover{background:var(--yellow);color:#000;border-color:#000}
-.comp{display:grid;grid-template-columns:1fr auto;gap:7px 10px;font-size:13px;margin-top:6px}
+.comp{display:grid;grid-template-columns:1fr auto;gap:8px 10px;font-size:13px;margin-top:10px}
 .comp .neg{color:var(--red);font-weight:800;font-variant-numeric:tabular-nums}
 .comp .pos{color:var(--green);font-weight:800;font-variant-numeric:tabular-nums}
 .slider{display:grid;grid-template-columns:210px 1fr 44px;align-items:center;gap:12px;margin:12px 0}
@@ -314,6 +316,11 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .select{border:1px solid var(--line);padding:7px 10px;font:inherit;background:var(--panel);color:var(--ink);font-weight:600;border-radius:var(--radius)}
 .select.sm{padding:5px 8px;font-size:11.5px;font-weight:500;max-width:140px}
 .select:focus{outline:2px solid var(--yellow)}
+/* An email field going disabled (because it's already been sent) needs to
+   visibly look locked, not just be non-interactive - the default browser
+   disabled treatment barely changes anything against this theme's colors,
+   which defeats the point of disabling it as a "this was sent" signal. */
+.select:disabled{background:var(--panel2);color:var(--muted2);border-style:dashed;cursor:not-allowed;opacity:.85}
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:14px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .dot{width:8px;height:8px;display:inline-block;border-radius:var(--radius)}
@@ -356,35 +363,33 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .timeline-body{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px}
 .timeline-body.aging-flag{border-color:rgba(212,137,10,.4);background:var(--amberbg)}
 /* Success Plan horizontal timeline — a date axis with alternating above/below
-   nodes; blue = the milestone has an active escalation/CTA attached (clicking
-   jumps straight to it in Engagement), red = an email template attached
-   (clicking jumps into that draft), black = anything else (clicking opens
-   the plain step-detail view). */
-.ms-timeline{position:relative;display:flex;overflow-x:auto;height:210px;padding:0 10px}
-.ms-timeline::before{content:'';position:absolute;left:0;right:0;top:105px;height:2px;background:var(--line)}
+   nodes. Black stays the base color throughout (dots and box text are never
+   filled yellow - that would just make the box's own text hard to read);
+   yellow is only ever a thin decorative accent (the connecting stem for an
+   active item, a solid vs. dashed border) never a background fill.
+   .ms-timeline-track is explicitly width:max-content so its own box is
+   exactly as wide as every item actually needs (not stretched to the scroll
+   container's visible width, which is what made the ::before line stop
+   partway once the row started overflowing) - the ::before line is
+   positioned against THIS box, so left:0/right:0 always reach the true
+   first/last item regardless of how many there are. */
+.ms-timeline{overflow-x:auto;padding:0 10px}
+.ms-timeline-track{position:relative;display:flex;height:210px;width:-webkit-max-content;width:max-content}
+.ms-timeline-track::before{content:'';position:absolute;left:0;right:0;top:105px;height:2px;background:var(--line)}
 .ms-tl-item{position:relative;flex:0 0 150px;height:210px}
 .ms-tl-dot{position:absolute;left:50%;top:105px;width:12px;height:12px;margin-left:-6px;margin-top:-6px;border-radius:50%;background:var(--ink);cursor:pointer;z-index:2}
-.ms-tl-dot.email{background:var(--red)}
-.ms-tl-dot.engagement{background:var(--blue)}
-.ms-tl-dot.ms-pending{background:var(--amber)}
-.ms-tl-dot.ms-resolved{background:var(--green)}
 .ms-tl-dot.done{opacity:.7}
 .ms-tl-date{position:absolute;left:50%;top:117px;transform:translateX(-50%);font-size:11px;color:var(--muted);white-space:nowrap}
 .ms-tl-stem{position:absolute;left:50%;width:1px;background:var(--line)}
 .ms-tl-item.above .ms-tl-stem{top:48px;height:57px}
 .ms-tl-item.below .ms-tl-stem{top:105px;height:57px}
-.ms-tl-stem.email{background:var(--red)}
-.ms-tl-stem.engagement{background:var(--blue)}
-.ms-tl-stem.ms-pending{background:var(--amber)}
-.ms-tl-stem.ms-resolved{background:var(--green)}
-.ms-tl-box{position:absolute;left:50%;transform:translateX(-50%);width:130px;border:1px dashed var(--line);border-radius:8px;padding:8px 10px;font-size:11px;text-align:center;cursor:pointer;background:var(--panel)}
+.ms-tl-stem.ms-active{background:var(--yellow-d)}
+.ms-tl-box{position:absolute;left:50%;transform:translateX(-50%);width:130px;border:1px dashed var(--line);border-radius:8px;padding:8px 10px;font-size:11px;text-align:center;cursor:pointer;background:var(--panel);color:var(--ink)}
 .ms-tl-item.above .ms-tl-box{top:0}
 .ms-tl-item.below .ms-tl-box{top:162px}
-.ms-tl-box.email{border-color:var(--red);border-style:solid}
-.ms-tl-box.engagement{border-color:var(--blue);border-style:solid}
-.ms-tl-box.ms-pending{border-color:var(--amber);border-style:solid;background:var(--amberbg)}
-.ms-tl-box.ms-resolved{border-color:var(--green);border-style:solid;background:var(--greenbg)}
+.ms-tl-box.ms-active{border-color:var(--yellow-d);border-style:solid}
 .ms-tl-box.done{opacity:.7}
+.ms-predictive-dot{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:var(--violet);color:#fff;font-size:9px;font-weight:700;flex:0 0 auto;vertical-align:middle}
 /* Escalation resolution stepper — a horizontal chevron flow (not a checklist)
    so the whole sequence reads at a glance: done (green), the step you're on
    now (violet), the step you're on and it's been sitting a while (orange with
@@ -440,14 +445,15 @@ html[data-theme="dark"] .overlay{background:rgba(0,0,0,.72)}
 .csat-num{font-family:var(--font-ui);font-size:36px;font-weight:700;font-variant-numeric:tabular-nums}
 .csat-face{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
 
-.milestone{display:grid;grid-template-columns:26px 1fr 140px auto auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line-soft)}
-@media(max-width:720px){.milestone{grid-template-columns:26px 1fr;grid-auto-flow:row}.milestone input[type=date]{grid-column:2}}
+.milestone{display:grid;grid-template-columns:44px 1fr 140px auto auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+@media(max-width:720px){.milestone{grid-template-columns:44px 1fr;grid-auto-flow:row}.milestone input[type=date]{grid-column:2}}
 .milestone:last-child{border-bottom:none}
-.milestone input[type=checkbox]{width:16px;height:16px;accent-color:var(--yellow);cursor:pointer}
 .milestone input[type=text]{width:100%;border:1px solid transparent;background:none;color:var(--ink);font:inherit;padding:5px 7px}
 .milestone input[type=text]:hover,.milestone input[type=text]:focus{border-color:var(--line);background:var(--panel2);outline:none}
 .milestone input[type=date]{border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;padding:5px 7px;font-size:12px;color-scheme:inherit}
 .milestone.done input[type=text]{text-decoration:line-through;color:var(--muted2)}
+.btn.icon-x{width:26px;height:26px;padding:0;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;color:var(--muted2)}
+.btn.icon-x:hover{color:var(--red);border-color:var(--red)}
 .tapstep{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
 .tapstep:last-child{border-bottom:none}
 .tapstep input[type=checkbox]{width:16px;height:16px;accent-color:var(--yellow);cursor:pointer;flex:none}

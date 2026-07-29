@@ -42,7 +42,7 @@ The account's actual current state: {recent_event_summary}
 Write a predictive insight with exactly these parts, as JSON only (no markdown fences, no commentary before or after):
 {{
   "pastReview": "2-3 sentences reviewing this account's history of engagement, grounded in the background above, ending on the opportunity to build a more proactive relationship-first rhythm going forward.",
-  "analysis": "2-3 sentences that are explicitly forward-looking - acknowledge the current-state fact given above only briefly if it's a genuinely open risk (in which case note that it's worth resolving first), then pivot to why the relationship is well-positioned to grow and what that means for building it further.",
+  "analysis": "2-3 sentences that are explicitly forward-looking - acknowledge the current-state fact given above only briefly if it's a genuinely open risk (in which case note that it's worth resolving first), then pivot to why the relationship is well-positioned to grow. Frame progress in terms of product engagement/adoption of the account's most valuable workflows as the primary evidence - NPS/sentiment is real but only supporting context, never the headline proof that something worked.",
   "similar": [{{"name": "a plausible peer agency name you invent - not {account_name}", "note": "one sentence on a relevant relationship-building outcome"}}, {{"name": "...", "note": "..."}}],
   "timeline": [
     {{"when": "Week 1", "action": "short action title", "detail": "1 sentence", "emailTemplate": "cust_checkin"}},
@@ -96,6 +96,15 @@ Draft the actual email now. Respond with ONLY JSON, no markdown fences, no comme
 
 
 ORG_CONFIG_CATEGORIES = ["escalation", "renewal", "usage", "case_watch", "cadence", "manual"]
+
+# Permanent business gates - per CS leadership's explicit correction: "renewal,
+# adoption, risk, and NPS remain permanent system components... leaders can
+# adjust thresholds, but should not be able to remove essential business gates
+# entirely." One trigger stands in for each fixed pillar. This is also
+# enforced in the frontend (applyOrgConfigChatDiff/setTriggerEnabled) as a
+# real code-level rule - the prompt instruction below is what makes the
+# model's own explanation match that rule instead of silently disabling it.
+CORE_TRIGGERS = {"nps_csat_drop": "NPS", "usage_drop": "ADOPTION", "case_blocked": "RISK", "renewal_prep_stale": "RENEWAL"}
 
 
 def answer_org_config_chat(message: str, current_config_json: str, org_docs: dict, history: list | None = None) -> dict:
@@ -151,7 +160,12 @@ Respond with ONLY JSON, no markdown fences, no commentary:
   "limitation": null
 }}
 
-Only include trigger keys/customTriggers actually being changed from the ORIGINAL current config - omit anything unchanged. If the request asks for something that genuinely doesn't fit this shape (a new page, a new step type, combining multiple accounts' data in a way the pipeline doesn't support, etc.), set "diff" to null and use "limitation" to explain plainly why, and suggest a concrete alternative that DOES fit the shape if one exists."""
+Only include trigger keys/customTriggers actually being changed from the ORIGINAL current config - omit anything unchanged. If the request asks for something that genuinely doesn't fit this shape (a new page, a new step type, combining multiple accounts' data in a way the pipeline doesn't support, etc.), set "diff" to null and use "limitation" to explain plainly why, and suggest a concrete alternative that DOES fit the shape if one exists.
+
+PERMANENT GATES - these trigger keys can NEVER be set to "enabled": false, no matter how the request is phrased (even "turn it off entirely", "we don't track that", "remove it"): {', '.join(f'{k} ({v})' for k, v in CORE_TRIGGERS.items())}. If the request asks to disable one of these:
+- Do NOT include "enabled": false for that key in the diff (omit the enabled field entirely for it, or leave it out of the diff if nothing else about it changed).
+- Still apply any OTHER part of the request that's valid (weight changes, timing, other triggers, custom triggers) - don't null out the whole diff just because one part touched a permanent gate.
+- Set "limitation" to a message in exactly this shape: "{{FEATURE}} CAN NOT BE TURNED OFF - it's a permanent business gate. You can still adjust its weight, timing/threshold, label or routing." where {{FEATURE}} is the gate's short name from the list above, in ALL CAPS (e.g. "NPS CAN NOT BE TURNED OFF - it's a permanent business gate. You can still adjust its weight, timing/threshold, label or routing.")."""
     resp = _client().messages.create(
         model=_MODEL_INSIGHT,
         max_tokens=1200,

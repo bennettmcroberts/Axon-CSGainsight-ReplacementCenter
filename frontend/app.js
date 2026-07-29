@@ -457,8 +457,8 @@ let currentCsmView = null; // CSM name of the profile page currently open, if on
 let currentRiskCardId = null; // acctId of the expanded risk card in #sheet, if one is open
 let commsCache = {};
 let intelCache = {};
-// ---- Product-line scorecard (org-config-gated - orgFeatureFlags.productLineScorecard) ----
-// LE's own ask: goals/risk/qualifying info tracked per product family, off
+// ---- Product-line scorecard (always on for every account/org) ----
+// LE's own ask originally: goals/risk/qualifying info tracked per product family, off
 // the exact same real Product2.Family purchase data Account 360 already
 // fetches (intelCache[id].famsRaw) - not a bulk N+1 fetch across the whole
 // book, just what's been captured as CSMs actually visit accounts.
@@ -799,10 +799,22 @@ function predictiveGeneratePastReview(a,rnd){
   const touchLine = a.daysSinceLastTouch!=null ? `Last logged contact was ${a.daysSinceLastTouch} days ago (${lastType}).` : `No logged contact on file yet.`;
   return `${touchLine} Historically, engagement with this account has centered on transactional or support topics — there's a clear opening to shift toward a more proactive, relationship-first rhythm going forward.`;
 }
+// Adoption is the primary evidence here, not NPS/sentiment - per CS
+// leadership's explicit correction: "the concept is right; NPS is the wrong
+// metric." Sentiment is named explicitly as supporting context, not the
+// headline signal, so the reframe is visible in the copy itself, not just
+// implied. adoptionTier reuses the same configurable benchmark everywhere
+// else in the app; real per-product/segment cohort benchmarks would come
+// from Mixpanel/Snowflake later.
 function predictiveGenerateAnalysis(a){
   const sentLabel=a.sentTier==='pos'?'positive':a.sentTier==='neg'?'strained':a.sentTier==='neu'?'neutral':'unknown';
+  const tier=adoptionTier(a);
+  const adoptLine = tier==='adopting' ? `product adoption is at/above benchmark (${a.usage.adoptionPct}%)`
+    : tier==='low' ? `product adoption has fallen below benchmark (${a.usage.adoptionPct}%) — the clearest signal to act on here`
+    : tier==='ramping' ? `product adoption is still ramping (${a.usage.adoptionPct}%)`
+    : 'no adoption data is on file yet for this account';
   const dealsLine=a.pastDeals?` and ${a.pastDeals} closed-won deal(s) already on the books`:'';
-  return `Looking ahead, ${a.name} is well-positioned to deepen the relationship — ${sentLabel} sentiment${dealsLine} give a real foundation to build on.${a.hasExecSponsor===false?' Confirming an executive sponsor would strengthen that foundation further.':''}${a.qbrDaysOverdue?' A fresh QBR is a natural next step to re-anchor the cadence.':''}`;
+  return `Looking ahead, ${a.name} is well-positioned to deepen the relationship — ${adoptLine}, with ${sentLabel} sentiment${dealsLine} as supporting context, not the headline signal.${a.hasExecSponsor===false?' Confirming an executive sponsor would strengthen that foundation further.':''}${a.qbrDaysOverdue?' A fresh QBR is a natural next step to re-anchor the cadence.':''}`;
 }
 // "Similar cases" - other real accounts in the same segment, each paired
 // with a plausible relationship-building outcome (the one part with no real
@@ -1299,7 +1311,7 @@ function evaluateRiskTriggers(){
     if(newLogo(a)){
       const p=plans[a.id];
       const daysSincePurchase=daysSince(a.firstPurchase);
-      const overdueMilestone = p && p.milestones && daysSincePurchase!=null ? p.milestones.find(m=>!m.done && m.day!=null && daysSincePurchase>m.day) : null;
+      const overdueMilestone = p && p.milestones && daysSincePurchase!=null ? p.milestones.find(m=>!msIsDone(m) && m.day!=null && daysSincePurchase>m.day) : null;
       if(overdueMilestone) fireTriggerWithCta(a.id,'onboarding_stall',daysSincePurchase,overdueMilestone.day,'draft_onboarding_nudge_email');
       // A narrower, earlier case than onboarding_stall above (which needs a
       // plan to already exist with an overdue milestone) - this is a new
@@ -1349,6 +1361,10 @@ function activeOverrideFor(acctId){ const list=riskOverrides.filter(o=>o.account
 function computedRiskStage(a){
   const openTriggers=triggerEvents.filter(t=>t.accountId===a.id && isTriggerLive(t));
   if(!openTriggers.length) return 'healthy';
+  // A severe NPS detractor (below 5, not just below the 9 promoter cutoff)
+  // is a strong enough signal on its own to force straight to Active Risk,
+  // regardless of what the weighted score would otherwise land on.
+  if(a.nps!=null && a.nps<5 && openTriggers.some(t=>t.triggerType==='nps_csat_drop')) return 'escalated';
   const score=riskScore(a);
   if(score>=riskWeights.thresholds.active) return 'escalated';
   if(score>=riskWeights.thresholds.elevated) return 'atrisk';
@@ -1828,7 +1844,18 @@ function setTriggerWeight(key,v){
   if(c){ c.weight=val; LS.set('customTriggers',customTriggers); } else { riskWeights.weights[key]=val; saveRiskWeights(); }
   route();
 }
-function setTriggerEnabled(key,v){ triggerEnabled[key]=!!v; LS.set('triggerEnabled',triggerEnabled); route(); }
+// Permanent business gates - per CS leadership's explicit correction:
+// "renewal, adoption, risk, and NPS remain permanent system components...
+// leaders can adjust thresholds, but should not be able to remove essential
+// business gates entirely." One trigger stands in for each fixed pillar.
+// Enforced here (not just in the chat prompt) so this is a real code-level
+// rule, not just something the model happens to respect.
+const CORE_TRIGGERS=['nps_csat_drop','usage_drop','case_blocked','renewal_prep_stale'];
+function isCoreTrigger(key){ return CORE_TRIGGERS.includes(key); }
+function setTriggerEnabled(key,v){
+  if(!v && isCoreTrigger(key)){ toast((RISK_TRIGGER_LABELS[key]||key).toUpperCase()+' can\'t be turned off - it\'s a permanent business gate. Adjust its weight or timing instead.'); route(); return; }
+  triggerEnabled[key]=!!v; LS.set('triggerEnabled',triggerEnabled); route();
+}
 function setTriggerLabelOverride(key,v){
   v=(v||'').trim();
   if(v && v!==RISK_TRIGGER_LABELS_BASE[key]) triggerLabelOverrides[key]=v; else delete triggerLabelOverrides[key];
@@ -1875,9 +1902,10 @@ function riskWeightsPanelHtml(){
   const rows=allKeys.map(k=>{
     const cust=customTriggerDef(k);
     const enabled=triggerIsEnabled(k);
+    const core=isCoreTrigger(k);
     return `<tr style="${enabled?'':'opacity:.5'}">
-      <td><input type="checkbox" ${enabled?'checked':''} onchange="setTriggerEnabled('${k}',this.checked)"></td>
-      <td><input type="text" class="select" style="min-width:200px" value="${esc(RISK_TRIGGER_LABELS[k]||'')}" onchange="setTriggerLabelOverride('${k}',this.value)"></td>
+      <td><input type="checkbox" ${enabled?'checked':''} ${core?'disabled title="Permanent business gate - can\'t be turned off, only re-weighted or re-timed"':''} onchange="setTriggerEnabled('${k}',this.checked)"></td>
+      <td><input type="text" class="select" style="min-width:200px" value="${esc(RISK_TRIGGER_LABELS[k]||'')}" onchange="setTriggerLabelOverride('${k}',this.value)">${core?' <span class="pill p-gray" title="Permanent business gate">CORE</span>':''}</td>
       <td><select class="select" onchange="setTriggerCategoryOverride('${k}',this.value)">${ORG_CONFIG_CATEGORY_OPTIONS.map(c=>`<option value="${c}" ${c===CTA_CATEGORY_BY_TRIGGER[k]?'selected':''}>${esc(orgConfigCategoryLabel(c))}</option>`).join('')}</select></td>
       <td><input type="number" min="0" style="width:60px" value="${triggerWeight(k)}" onchange="setTriggerWeight('${k}',this.value)"></td>
       <td class="mini">${cust?'Custom':'Built-in'}</td>
@@ -1885,7 +1913,7 @@ function riskWeightsPanelHtml(){
     </tr>`;
   }).join('');
   return `<div class="card"><h3>Tune trigger weights, labels, routing & on/off</h3>
-    <p class="mini" style="line-height:1.7">Every open, enabled trigger contributes points based on its weight (an open escalation's points scale with its real severity, not just whether one exists). Points also grow the longer a trigger stays open. Disabling a trigger stops it from firing at all - it simply never happens for this config, everywhere in the app.</p>
+    <p class="mini" style="line-height:1.7">Every open, enabled trigger contributes points based on its weight (an open escalation's points scale with its real severity, not just whether one exists). Points also grow the longer a trigger stays open. Disabling a trigger stops it from firing at all - it simply never happens for this config, everywhere in the app. <b>CORE</b>-tagged triggers (${CORE_TRIGGERS.map(k=>esc(RISK_TRIGGER_LABELS[k]||k)).join(', ')}) are permanent business gates - renewal, adoption, risk and NPS - and can't be disabled at all, only re-weighted, re-labeled, re-routed or re-timed.</p>
     <div style="overflow-x:auto"><table><thead><tr><th>On</th><th>Label</th><th>Routes to</th><th>Weight</th><th>Type</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="row-actions" style="margin-top:14px;flex-wrap:wrap">
       <label class="mini">Elevated Risk at score ≥ <input type="number" min="0" style="width:50px" value="${riskWeights.thresholds.elevated}" onchange="setRiskThreshold('elevated',this.value)"></label>
@@ -1912,7 +1940,7 @@ let orgConfigChatLog=[]; // session-only: [{role,text,matchedOrg,diff,limitation
 function orgConfigChatHtml(){
   const entries=orgConfigChatLog.map((e,i)=>{
     if(e.role==='user') return `<div class="mini" style="margin:10px 0 4px"><b>You:</b> ${esc(e.text)}</div>`;
-    return `<div class="card" style="box-shadow:none;margin:4px 0 10px;background:var(--panel2);border:1px solid ${e.limitation?'var(--amber)':'var(--violet)'}">
+    return `<div class="card" style="box-shadow:none;margin:4px 0 10px;border:1px solid ${e.limitation?'var(--amber)':'var(--violet)'}">
       <div class="mini" style="margin-bottom:4px">${e.matchedOrg?`<span class="pill p-violet">${esc(e.matchedOrg)}</span>`:''}${e.limitation?' <span class="pill p-amber">Not supported as-is</span>':''}${e.applied?' <span class="pill p-green">Applied</span>':''}</div>
       <p class="mini" style="font-weight:600;color:var(--ink);margin-bottom:4px">${e.limitation?'Why this doesn\'t fit:':'What this changes:'}</p>
       <p class="mini">${esc(e.text)}</p>
@@ -1923,7 +1951,7 @@ function orgConfigChatHtml(){
   }).join('');
   return `<div class="card"><h3>Ask about your org's settings <span class="hint">real model call — a running conversation, not one-shot: keep adding requests, each reply refines the same proposal, until you click Apply</span></h3>
     <div id="orgConfigChatLog">${entries||'<p class="mini">No requests yet — try "Weight a blocked case higher for our 911 team" or "We don\'t care about QBRs."</p>'}</div>
-    <textarea id="orgConfigChatInput" class="select" rows="2" style="width:100%;margin-top:8px" placeholder="Describe what you want changed, or add to / adjust what's already proposed above…"></textarea>
+    <textarea id="orgConfigChatInput" class="select" rows="5" style="width:100%;margin-top:8px" placeholder="Describe what you want changed, or add to / adjust what's already proposed above…"></textarea>
     <div class="row-actions" style="margin-top:8px"><button type="button" class="btn sm primary" id="orgConfigChatBtn" onclick="requestOrgConfigChat()">Ask</button>${orgConfigChatLog.length?`<button type="button" class="btn sm" onclick="if(confirm('Clear this conversation? Nothing already applied is affected.')){orgConfigChatLog=[];route();}">Clear conversation</button>`:''}</div>
     <div id="orgConfigChatStatus" class="mini" style="margin-top:6px;color:var(--muted2)"></div>
   </div>`;
@@ -1956,9 +1984,14 @@ async function requestOrgConfigChat(){
 function applyOrgConfigChatDiff(idx){
   const e=orgConfigChatLog[idx]; if(!e||!e.diff) return;
   const diff=e.diff;
+  let blockedCore=[];
   if(diff.triggers) Object.keys(diff.triggers).forEach(key=>{
     const t=diff.triggers[key];
-    if(t.enabled!=null) triggerEnabled[key]=!!t.enabled;
+    // Code-level backstop, independent of whatever the model returned - a
+    // core business gate (NPS/adoption/risk/renewal) can never be disabled
+    // via this path either, same rule setTriggerEnabled enforces from the
+    // manual editor.
+    if(t.enabled!=null){ if(!t.enabled && isCoreTrigger(key)) blockedCore.push(key); else triggerEnabled[key]=!!t.enabled; }
     if(t.label!=null){ if(t.label!==RISK_TRIGGER_LABELS_BASE[key]) triggerLabelOverrides[key]=t.label; else delete triggerLabelOverrides[key]; }
     if(t.category!=null) triggerCategoryOverrides[key]=t.category;
     if(t.weight!=null){ const c=customTriggerDef(key); if(c) c.weight=+t.weight; else riskWeights.weights[key]=+t.weight; }
@@ -1969,7 +2002,7 @@ function applyOrgConfigChatDiff(idx){
   LS.set('triggerEnabled',triggerEnabled); LS.set('triggerLabelOverrides',triggerLabelOverrides); LS.set('triggerCategoryOverrides',triggerCategoryOverrides);
   LS.set('customTriggers',customTriggers); saveRiskWeights();
   e.applied=true;
-  toast('Applied — settings updated.');
+  toast(blockedCore.length?`Applied — ${blockedCore.map(k=>(RISK_TRIGGER_LABELS[k]||k).toUpperCase()).join(', ')} left ON (permanent business gate, can't be disabled).`:'Applied — settings updated.');
   route();
   // Applying is the point this stops being a scratch conversation and
   // becomes a real, named config slot - same slot system Configure Org Data
@@ -2593,6 +2626,11 @@ function sendEngagementCtaDraft(ctaId){
   if(ccEl) step.cc=ccEl.value;
   if(!(step.subject||'').trim() || !(step.body||'').trim()){ toast('Add a subject and message body before sending.'); return; }
   step.sent=true; step.sentAt=new Date().toISOString();
+  // Advance the expanded panel to the next step immediately - otherwise
+  // ceExpandedStepId was still pointing at step 0's id, so the page kept
+  // showing the just-sent (now-disabled) email panel instead of moving on
+  // to whatever's actionable next.
+  if(c.steps[1]) ceExpandedStepId=c.steps[1].id;
   c.status=engagementCtaEffectiveStatus(c);
   saveEngagementCtas();
   // Non-escalation CTAs get a per-CTA reference tag baked into the wire
@@ -2732,7 +2770,7 @@ const NAV_CATEGORIES=[
   {id:'home',label:'Home',icon:'<path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-5H10v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/>',tabs:['home']},
   {id:'cockpit',label:'My Book',icon:'<path d="M12 6C10 4.3 6.8 3.8 3.5 4.3v13.8c3.3-.5 6.5 0 8.5 1.7 2-1.7 5.2-2.2 8.5-1.7V4.3C17.2 3.8 14 4.3 12 6Z"/><path d="M12 6v13.8"/>',tabs:['overview','worklist']},
   {id:'performance',label:'Performance',icon:'<path d="M4 20h16M7 20V10m5 10V4m5 16v-7"/>',tabs:['acctscorecard','scorecard','prodscorecard','execreport','model']},
-  {id:'pulse',label:'Customer Pulse',icon:'<path d="M3 12h4l2-7 4 14 2-7h6"/>',tabs:['npsagency','npsmanaged','csat','insights','usage']},
+  {id:'pulse',label:'Customer Pulse',icon:'<path d="M3 12h4l2-7 4 14 2-7h6"/>',tabs:['npsagency','npsmanaged','usage','csat','insights']},
   {id:'risk',label:'Accounts & Risk',icon:'<path d="M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3Z"/><path d="M12 8v5M12 16h.01"/>',tabs:['riskboard']},
   {id:'engagement',label:'Engagement',icon:'<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',tabs:['engagement','escalations','activectas','emails','gong']},
   {id:'journey',label:'Customer Success Journey',icon:'<path d="M6 3v18"/><path d="M6 5h12l-3 4 3 4H6"/>',tabs:['predictive','plans','csemails','acctoutcomes']},
@@ -2862,7 +2900,13 @@ function viewGong(accts){
 // same real fields the risk engine already tracks) instead of just repeating
 // the same cadence blind.
 let acctOutcomeFilter=null; // null | 'approved' | 'disapproved'
-function outcomeFunnelHtml(allV,allSub,pendV,pendSub,doneV,doneSub,apprV,apprSub,disV,disSub){
+// Shared funnel shape for both outcome branches - which metric decides
+// approved/disapproved is entirely parameterized (apprLabel/disLabel/onClick)
+// so the adoption funnel (primary signal) and the NPS funnel (supporting
+// signal) render as the exact same component, just pointed at different data.
+function outcomeFunnelHtml(allV,allSub,pendV,pendSub,doneV,doneSub,apprV,apprSub,disV,disSub,apprLabel,disLabel,onClick,forkAnchorPrefix){
+  apprLabel=apprLabel||'Approved'; disLabel=disLabel||'Disapproved'; onClick=onClick||'clickOutcomeBranch';
+  const arrowId='outcomeForkArrow'+(forkAnchorPrefix||'');
   return `<div class="funnel">
     <div class="funnel-box"><div class="l">All accounts</div><div class="v">${allV}</div><div class="d">${esc(allSub)}</div></div>
     <div class="funnel-conn"><span class="funnel-flow"></span></div>
@@ -2871,18 +2915,33 @@ function outcomeFunnelHtml(allV,allSub,pendV,pendSub,doneV,doneSub,apprV,apprSub
     <div class="funnel-box risk-amber"><div class="l">Plans completed</div><div class="v">${doneV}</div><div class="d">${esc(doneSub)}</div></div>
     <div class="funnel-fork">
       <svg viewBox="0 0 60 80" preserveAspectRatio="none">
-        <defs><marker id="outcomeForkArrow" markerWidth="3" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0 L3,2 L0,4 Z" class="fork-arrowhead"/></marker></defs>
-        <path class="fork-path" d="M0,40 Q30,40 54,14" marker-end="url(#outcomeForkArrow)"/>
-        <path class="fork-path" d="M0,40 Q30,40 54,66" marker-end="url(#outcomeForkArrow)"/>
+        <defs><marker id="${arrowId}" markerWidth="3" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0 L3,2 L0,4 Z" class="fork-arrowhead"/></marker></defs>
+        <path class="fork-path" d="M0,40 Q30,40 54,14" marker-end="url(#${arrowId})"/>
+        <path class="fork-path" d="M0,40 Q30,40 54,66" marker-end="url(#${arrowId})"/>
         <circle class="fork-dot" r="3.2"><animateMotion dur="1.8s" repeatCount="indefinite" path="M0,40 Q30,40 54,14"/></circle>
         <circle class="fork-dot" r="3.2"><animateMotion dur="1.8s" begin="0.9s" repeatCount="indefinite" path="M0,40 Q30,40 54,66"/></circle>
       </svg>
     </div>
     <div class="funnel-fork-boxes">
-      <div class="funnel-box small risk-green clickable" onclick="clickOutcomeBranch('approved')"><div class="l">NPS approved</div><div class="v">${apprV}</div><div class="d">${esc(apprSub)}</div></div>
-      <div class="funnel-box small risk-red clickable" onclick="clickOutcomeBranch('disapproved')"><div class="l">NPS disapproved</div><div class="v">${disV}</div><div class="d">${esc(disSub)}</div></div>
+      <div class="funnel-box small risk-green clickable" onclick="${onClick}('approved')"><div class="l">${esc(apprLabel)}</div><div class="v">${apprV}</div><div class="d">${esc(apprSub)}</div></div>
+      <div class="funnel-box small risk-red clickable" onclick="${onClick}('disapproved')"><div class="l">${esc(disLabel)}</div><div class="v">${disV}</div><div class="d">${esc(disSub)}</div></div>
     </div>
   </div>`;
+}
+// Adoption branch is display/filter-only (scrolls to the row list below) -
+// deliberately NOT wired to the vote/redraft-next-quarter-insight workflow
+// clickOutcomeBranch does for NPS, so the two metrics don't fight over the
+// single p.lastOutcome vote slot. Adopting/low tiers reuse the exact same
+// configurable adoptionCfg thresholds already used everywhere else in the
+// app (Usage & Adoption, Configure Org Data) - no new benchmark concept.
+function clickAdoptionOutcomeBranch(verdict){
+  scrollToSection(verdict==='approved'?'outcomeAdoptionApproved':'outcomeAdoptionDisapproved');
+}
+function acctOutcomeAdoptionRowsHtml(list){
+  if(!list.length) return '<p class="mini">No accounts in this group.</p>';
+  return `<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Adoption</th><th>Trend</th><th></th></tr></thead><tbody>
+  ${list.map(a=>`<tr><td onclick="openAcct('${a.id}')" style="cursor:pointer"><b>${esc(a.name)}</b></td><td>${ownerCell(a.ownerName)}</td><td class="num">${adoptionPill(a)}</td><td>${usageTrendHtml(a.usage?a.usage.trend:null)}</td><td><button class="btn sm" onclick="openAcct('${a.id}')">Open account</button></td></tr>`).join('')}
+  </tbody></table>`;
 }
 function clickOutcomeBranch(verdict){
   const qKey=quarterKeyOf(globalQSel||defaultQSel());
@@ -2947,15 +3006,26 @@ function viewAcctOutcomes(accts){
   const qKey=quarterKeyOf(sel);
   const pending=accts.filter(a=>{ const p=plans[a.id]; return p&&planProgress(p)<100; });
   const completed=accts.filter(a=>{ const p=plans[a.id]; return p&&planProgress(p)===100; });
+  // Primary success signal: did the completed plan actually drive critical
+  // product adoption, not just a survey response. Reuses the exact same
+  // configurable adoptionCfg tiers as Usage & Adoption/Configure Org Data -
+  // no new benchmark concept, just the metric this funnel leads with.
+  const adoptionApproved=completed.filter(a=>adoptionTier(a)==='adopting');
+  const adoptionDisapproved=completed.filter(a=>adoptionTier(a)==='low');
   const approved=completed.filter(a=>a.nps!=null&&a.nps>=9);
   const disapproved=completed.filter(a=>a.nps!=null&&a.nps<9);
-  let html=`<div class="card"><h3>Account Outcomes <span class="hint">measuring whether completed Success Plans actually moved NPS</span></h3>
-    <p class="mini" style="margin-bottom:12px">Every account whose Success Plan is fully complete gets checked against its NPS score. Click a branch to vote on last quarter's plan and draft next quarter's — an approved branch repeats a similar cadence, a disapproved branch leads with the likely cause.</p>
+  let html=`<div class="card"><h3>Account Outcomes <span class="hint">measuring whether completed Success Plans actually drove product adoption</span></h3>
+    <p class="mini" style="margin-bottom:12px">The primary question: did a completed Success Plan translate into real, sustained use of the product's most valuable workflows? NPS (below) still matters, but only as supporting context — it's too delayed, contact-specific, and pricing-sensitive to be the proof a recommended action worked. Detailed per-product/per-segment adoption benchmarks would ultimately come from Mixpanel/Snowflake usage data; today's adoption tiers are a configurable stand-in for that (Configure Org Data → Adoption thresholds).</p>
     ${quarterToggleHtml(sel,'setGlobalQYear','setGlobalQQ')}
-    ${outcomeFunnelHtml(accts.length,'in scope',pending.length,'plan in progress',completed.length,qKey+' cycle',approved.length,'NPS 9-10',disapproved.length,'NPS below 9')}
+    ${outcomeFunnelHtml(accts.length,'in scope',pending.length,'plan in progress',completed.length,qKey+' cycle',adoptionApproved.length,'at/above benchmark',adoptionDisapproved.length,'below benchmark','Adoption improved','Adoption declined','clickAdoptionOutcomeBranch','Adopt')}
+    <h3 style="margin-top:18px">NPS <span class="hint">supporting signal — not the success gate</span></h3>
+    <p class="mini" style="margin-bottom:12px">NPS still matters organizationally and still feeds Health, but a completed plan is no longer judged pass/fail by it alone. Click a branch to vote on last quarter's plan and draft next quarter's, same as before.</p>
+    ${outcomeFunnelHtml(accts.length,'in scope',pending.length,'plan in progress',completed.length,qKey+' cycle',approved.length,'NPS 9-10',disapproved.length,'NPS below 9','NPS approved','NPS disapproved','clickOutcomeBranch','Nps')}
   </div>`;
   if(acctOutcomeFilter) html+=`<p class="mini" style="margin:0 4px 10px">Showing <b>${acctOutcomeFilter==='approved'?'NPS approved':'NPS disapproved'}</b> · <a href="#" onclick="clearOutcomeFilter();return false" style="text-decoration:underline;text-decoration-color:var(--yellow)">clear</a></p>`;
   html+=`<div class="card" id="outcomePending"><h3>Pending completed <span class="hint">${pending.length} account${pending.length===1?'':'s'} with a plan in progress</span></h3>${acctOutcomePendingRowsHtml(pending)}</div>`;
+  html+=`<div class="card" id="outcomeAdoptionApproved"><h3>Adoption improved <span class="hint">${adoptionApproved.length} account${adoptionApproved.length===1?'':'s'} · at/above benchmark</span></h3>${acctOutcomeAdoptionRowsHtml(adoptionApproved)}</div>`;
+  html+=`<div class="card" id="outcomeAdoptionDisapproved"><h3>Adoption declined <span class="hint">${adoptionDisapproved.length} account${adoptionDisapproved.length===1?'':'s'} · below benchmark</span></h3>${acctOutcomeAdoptionRowsHtml(adoptionDisapproved)}</div>`;
   html+=`<div class="card" id="outcomeApproved"><h3>NPS approved <span class="hint">${approved.length} account${approved.length===1?'':'s'}</span></h3>${acctOutcomeRowsHtml(approved,'approved',qKey)}</div>`;
   html+=`<div class="card" id="outcomeDisapproved"><h3>NPS disapproved <span class="hint">${disapproved.length} account${disapproved.length===1?'':'s'}</span></h3>${acctOutcomeRowsHtml(disapproved,'disapproved',qKey)}</div>`;
   return html;
@@ -3826,27 +3896,73 @@ function viewInsightsTab(accts){
 // opens the same full Account 360 detail view used everywhere else in the
 // app (openAcct), so there's exactly one place account data actually lives,
 // not a second parallel "scorecard" copy of it.
+// Book-wide product-line adoption, straight off the real per-product usage
+// data already bulk-loaded for every account at boot (a.usage.products -
+// family/licensed/active/pct, from OpportunityLineItem/ProductUsage__c - see
+// load()'s qUsage query) - no per-account manual entry and no N+1 fetch
+// needed, unlike the CSM-curated goal/risk notes on Account 360. This is the
+// "critical feature adoption by product" view: which product lines are
+// actually being used at the benchmark level across the book, not just
+// whether they were purchased.
+function bookProductFamilyRollup(accts){
+  const byFam={};
+  accts.forEach(a=>{
+    ((a.usage&&a.usage.products)||[]).forEach(p=>{
+      if(p.pct==null) return;
+      const fam=p.family||'Untagged';
+      const r=byFam[fam]=byFam[fam]||{family:fam,accounts:0,sum:0,atRisk:0,ramping:0,adopting:0,accts:[]};
+      r.accounts++; r.sum+=p.pct; r.accts.push({a,pct:p.pct});
+      if(p.pct<adoptionCfg.atRiskPct) r.atRisk++;
+      else if(p.pct>=adoptionCfg.adoptingPct) r.adopting++;
+      else r.ramping++;
+    });
+  });
+  return Object.values(byFam).map(r=>({...r,avgPct:Math.round(r.sum/r.accounts)})).sort((a,b)=>b.accounts-a.accounts);
+}
+let productFamilyFilter=null;
+function setProductFamilyFilter(fam){ productFamilyFilter=productFamilyFilter===fam?null:fam; route(); scrollToSection('productFamilyAccts'); }
+// Jumps here from Account 360's own "By product" row (usageCard) - forces
+// the filter (doesn't toggle) since we're arriving from a different page,
+// not re-clicking an already-selected row.
+function viewProductFamilyFromAccount(fam){ productFamilyFilter=fam; setTab('prodscorecard'); setTimeout(()=>scrollToSection('productFamilyAccts'),80); }
+// No longer org-config-gated - critical product adoption turned out to
+// matter across every org, not just Law Enforcement's multi-product book,
+// so this is now always on. orgFeatureFlags.productLineScorecard is left in
+// place (harmless, unused) rather than ripped out of every existing config
+// bundle/slot for no functional reason.
 function viewProductScorecard(accts){
-  if(!orgFeatureFlags.productLineScorecard){
-    return `<div class="card"><h3>Product <span class="sortbar">${ceTest10ToggleHtml()}</span> <span class="hint">org-config gated feature</span></h3>
-      <p class="mini" style="margin-bottom:12px">The active config doesn't have product-line scorecards turned on. Law Enforcement's config enables it (goals/risk/qualifying info tracked per product family, aggregating up to account level) - switch to that config in Configure Org Data, or turn the flag on for your current one.</p>
-      <button type="button" class="btn sm" onclick="setTab('model')">Go to Configure Org Data</button>
-    </div>`;
-  }
-  const scored=accts.filter(a=>productScorecards[a.id] && Object.keys(productScorecards[a.id]).length);
-  const totalFamilies=scored.reduce((s,a)=>s+Object.keys(productScorecards[a.id]).length,0);
-  const atRiskFamilies=scored.reduce((s,a)=>s+acctProductRiskRollup(a.id).atRisk,0);
-  return `<div class="card"><h3>Product <span class="hint">product-line goals/risk, captured from Account 360, aggregated here</span></h3>
+  const rows=bookProductFamilyRollup(accts);
+  const totalPairs=rows.reduce((s,r)=>s+r.accounts,0);
+  const totalAtRisk=rows.reduce((s,r)=>s+r.atRisk,0);
+  const bookAvg=totalPairs?Math.round(rows.reduce((s,r)=>s+r.sum,0)/totalPairs):null;
+  const worst=rows.length?[...rows].sort((a,b)=>a.avgPct-b.avgPct)[0]:null;
+  const best=rows.length?[...rows].sort((a,b)=>b.avgPct-a.avgPct)[0]:null;
+  const filtered=productFamilyFilter?rows.find(r=>r.family===productFamilyFilter):null;
+  const acctList=filtered?[...filtered.accts].sort((x,y)=>x.pct-y.pct):[...rows.flatMap(r=>r.accts.map(x=>({...x,family:r.family})))].sort((x,y)=>x.pct-y.pct).slice(0,50);
+  return `<div class="card"><h3>Product <span class="hint">critical feature adoption by product line, straight off real per-product usage data — not whether it was purchased, whether it's actually being used</span></h3>
+    <p class="mini" style="margin-bottom:12px">Each product's own adoption benchmark ultimately belongs in Mixpanel/Snowflake, tailored by product and agency size (a 150-officer agency and a 5,000-officer agency shouldn't share one threshold). Today this reuses the one configurable adoption benchmark already in Configure Org Data as a stand-in for that per-product/segment cohort model.</p>
     <div class="kpis" style="margin:14px 0">
-      <div class="kpi"><div class="l">Accounts scored</div><div class="v">${scored.length}</div><div class="d">of ${accts.length} in scope</div></div>
-      <div class="kpi"><div class="l">Product lines tracked</div><div class="v">${totalFamilies}</div><div class="d">across scored accounts</div></div>
-      <div class="kpi risk-red"><div class="l">At-risk product lines</div><div class="v">${atRiskFamilies}</div><div class="d">needs attention</div></div>
+      <div class="kpi"><div class="l">Product lines tracked</div><div class="v">${rows.length}</div><div class="d">with usage data on file</div></div>
+      <div class="kpi"><div class="l">Book-wide avg adoption</div><div class="v" style="color:${bookAvg==null?'var(--muted)':adoptionColor(bookAvg>=adoptionCfg.adoptingPct?'adopting':bookAvg<adoptionCfg.atRiskPct?'low':'ramping')}">${bookAvg==null?'—':bookAvg+'%'}</div><div class="d">across ${totalPairs} account-product pairs</div></div>
+      <div class="kpi risk-red clickable" onclick="scrollToSection('productFamilyTable')"><div class="l">Below benchmark</div><div class="v">${totalAtRisk}</div><div class="d">account-product pairs at risk</div></div>
+      <div class="kpi"><div class="l">Most at-risk line</div><div class="v" style="font-size:15px">${worst?esc(prodName(worst.family)):'—'}</div><div class="d">${worst?worst.avgPct+'% avg adoption':'no data'}</div></div>
     </div>
   </div>
-  <div class="card"><h3>Accounts</h3>
-    ${scored.length?`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Product lines</th><th class="num">Healthy</th><th class="num">Watch</th><th class="num">At risk</th></tr></thead><tbody>
-    ${scored.map(a=>{ const r=acctProductRiskRollup(a.id); return `<tr onclick="openAcct('${a.id}')" style="cursor:pointer"><td><b>${esc(a.name)}</b></td><td>${ownerCell(a.ownerName)}</td><td class="num">${r.total}</td><td class="num">${r.healthy}</td><td class="num">${r.watch}</td><td class="num">${r.atRisk}</td></tr>`; }).join('')}
-    </tbody></table>`:'<p class="mini">No accounts scored yet — open an account, view its Products Purchased card, then set goals/risk in the Product-line scorecard card that appears below it.</p>'}
+  <div class="card" id="productFamilyTable"><h3>By product line <span class="hint">click a row to see the accounts behind it</span></h3>
+    ${rows.length?`<table><thead><tr><th>Product</th><th class="num">Accounts</th><th class="num">Avg adoption</th><th class="num">Adopting</th><th class="num">Ramping</th><th class="num">At risk</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr onclick="setProductFamilyFilter('${attrStr(r.family)}')" style="cursor:pointer;${productFamilyFilter===r.family?'background:var(--panel2)':''}"><td><b>${esc(prodName(r.family))}</b></td><td class="num">${r.accounts}</td><td class="num" style="color:${adoptionColor(r.avgPct>=adoptionCfg.adoptingPct?'adopting':r.avgPct<adoptionCfg.atRiskPct?'low':'ramping')}">${r.avgPct}%</td><td class="num">${r.adopting}</td><td class="num">${r.ramping}</td><td class="num">${r.atRisk}</td></tr>`).join('')}
+    </tbody></table>`:'<p class="mini">No per-product usage data on file for accounts in scope.</p>'}
+  </div>
+  <div class="card" id="productFamilyAccts"><h3>${filtered?esc(prodName(filtered.family))+' — accounts':'Lowest-adoption accounts across all products'} <span class="hint">${filtered?`${acctList.length} account${acctList.length===1?'':'s'} · ${'click the row above again to clear'}`:'top 50 shown · click a product line above to filter to just that one'}</span></h3>
+    ${acctList.length?`<table><thead><tr><th>Account</th><th>Owner</th>${filtered?'':'<th>Product</th>'}<th class="num">Adoption</th></tr></thead><tbody>
+    ${acctList.map(x=>`<tr onclick="openAcct('${x.a.id}')" style="cursor:pointer"><td><b>${esc(x.a.name)}</b></td><td>${ownerCell(x.a.ownerName)}</td>${filtered?'':`<td>${esc(prodName(x.family))}</td>`}<td class="num" style="color:${adoptionColor(x.pct>=adoptionCfg.adoptingPct?'adopting':x.pct<adoptionCfg.atRiskPct?'low':'ramping')}">${x.pct}%</td></tr>`).join('')}
+    </tbody></table>`:'<p class="mini">No accounts to show.</p>'}
+  </div>
+  <div class="card"><h3>CSM-tracked goals &amp; risk notes <span class="hint">manual, per-account context from Account 360 — supplements the usage data above</span></h3>
+    ${(()=>{ const scored=accts.filter(a=>productScorecards[a.id] && Object.keys(productScorecards[a.id]).length);
+      return scored.length?`<table><thead><tr><th>Account</th><th>Owner</th><th class="num">Product lines</th><th class="num">Healthy</th><th class="num">Watch</th><th class="num">At risk</th></tr></thead><tbody>
+      ${scored.map(a=>{ const r=acctProductRiskRollup(a.id); return `<tr onclick="openAcct('${a.id}')" style="cursor:pointer"><td><b>${esc(a.name)}</b></td><td>${ownerCell(a.ownerName)}</td><td class="num">${r.total}</td><td class="num">${r.healthy}</td><td class="num">${r.watch}</td><td class="num">${r.atRisk}</td></tr>`; }).join('')}
+      </tbody></table>`:'<p class="mini">No accounts scored yet — open an account, view its Products Purchased card, then set goals/risk in the Product-line scorecard card that appears below it.</p>'; })()}
   </div>`;
 }
 function viewAcctScorecard(accts){
@@ -4669,7 +4785,7 @@ function discoveryCard(id,p){
     </details>
   </div>`;
 }
-function planProgress(p){ if(!p||!p.milestones||!p.milestones.length) return 0; return Math.round(p.milestones.filter(m=>m.done).length/p.milestones.length*100); }
+function planProgress(p){ if(!p||!p.milestones||!p.milestones.length) return 0; return Math.round(p.milestones.filter(m=>msIsDone(m)).length/p.milestones.length*100); }
 function quarterLabel(qKey){ const [y,q]=(qKey||currentQuarter()).split('-Q'); return 'Q'+q+' '+y; }
 // Success Plans run on the same quarterly cadence as the CSM-run customer
 // surveys (surveyState/currentQuarter) - a plan "expires" into Pending again
@@ -4831,10 +4947,13 @@ function viewPlans(accts){
 // dedicated page with a "← Back" button, not a #sheet overlay), so a Success
 // Plan is somewhere you navigate to and work in, not a half-screen drawer.
 let currentPlanAcctId = null;
+let planObjectivesEditing = false;
+function toggleObjectivesEdit(){ planObjectivesEditing=!planObjectivesEditing; route(); }
 function openPlan(id){
   if(!plans[id]) generatePlan(id);
   currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; currentPredictiveAcctId=null; currentPlanMilestone=null;
   currentPlanAcctId=id;
+  planObjectivesEditing=false;
   route();
   window.scrollTo(0,0);
 }
@@ -4851,7 +4970,7 @@ function planPageHtml(id,p,a){
     <div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Success Plan · Owner ${ownerCell(a.ownerName)} · ${newLogo(a)?'New logo · first purchase '+esc(a.firstPurchase||''):'Established account'} · Renewal ${a.dclose>9000?'—':'in '+a.dclose+'d'}</div></div>
     <button class="btn sm" onclick="closePlan()">← Back</button></div></div>
   <div class="bd">
-    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Progress <span class="hint">${p.milestones.filter(m=>m.done).length} of ${p.milestones.length} milestones complete</span></h3>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Progress <span class="hint">${p.milestones.filter(m=>msIsDone(m)).length} of ${p.milestones.length} milestones complete</span></h3>
       <div class="progress"><i style="width:${prog}%"></i></div>
       <div class="row-actions" style="margin-top:10px;align-items:center">
         <span class="pill p-blue">${esc(planTypeLabel(p.planType))} plan</span>
@@ -4863,13 +4982,17 @@ function planPageHtml(id,p,a){
       </div>
       <p class="mini" style="margin-top:8px">Plan ${p.auto?'auto-generated':'created'} ${new Date(p.created).toLocaleDateString()} · saved in your browser. Click a milestone's <b>Open</b> button for guidance, talk tracks and email templates.</p>
     </div>
-    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Objectives <span class="hint">one per line</span></h3>
-      <textarea class="obj-in" id="planObj" oninput="setPlanObjectives('${id}',this.value)">${esc((p.objectives||[]).join('\n'))}</textarea>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Objectives <span class="sortbar"><button type="button" class="btn sm" onclick="toggleObjectivesEdit()">${planObjectivesEditing?'Done':'Edit'}</button></span></h3>
+      ${planObjectivesEditing
+        ? `<textarea class="obj-in" id="planObj" placeholder="One objective per line…" oninput="setPlanObjectives('${id}',this.value)">${esc((p.objectives||[]).join('\n'))}</textarea>`
+        : ((p.objectives||[]).length
+            ? `<ol style="margin:0;padding-left:22px">${(p.objectives||[]).map(o=>`<li class="mini" style="margin-bottom:6px;color:var(--ink)">${esc(o)}</li>`).join('')}</ol>`
+            : '<p class="mini">No objectives set yet — click Edit to add some.</p>')}
     </div>
     ${discoveryCard(id,p)}
     ${msTimelineHtml(p)}
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Milestones</h3>
-      <div id="planMs">${p.milestones.map(m=>msRow(id,m)).join('')}</div>
+      <div id="planMs">${[...p.milestones].sort((x,y)=>(x.due||'9999')<(y.due||'9999')?-1:1).map(m=>msRow(id,m)).join('')}</div>
       <div class="row-actions" style="margin-top:10px"><button class="btn sm" onclick="addPlanMs('${id}')">+ Add milestone</button></div>
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Notes</h3>
@@ -4897,16 +5020,39 @@ function msTlNodeKind(m){
   if(rs.some(r=>r.kind==='email')) return 'email';
   return null;
 }
+// A milestone's completion is never a manual override anymore - it's
+// derived from its own 3-step chevron (same "done" concept an engagement
+// CTA already uses), so the timeline bubble/list row can only go green
+// because the real steps behind it were actually completed, not because
+// someone checked a box. Lazily created the first time a milestone is
+// touched; legacy plans (from before this existed) seed from the old flat
+// m.done boolean so nothing already-completed looks reset.
+function ensureMsSteps(m){
+  if(m.steps) return m.steps;
+  const hasEmail=(m.resources||[]).some(r=>r.kind==='email');
+  const legacyDone=!!m.done;
+  m.steps=[
+    {id:'ms0',type:hasEmail?'email':'task',label:hasEmail?'Email sent':'Started',done:legacyDone,doneAt:legacyDone?m.due||null:null},
+    {id:'ms1',type:'task',label:'Customer engaged',done:legacyDone,doneAt:null},
+    {id:'ms2',type:'task',label:'Milestone complete',done:legacyDone,doneAt:null},
+  ];
+  return m.steps;
+}
+// Email steps are driven purely by whether the real email actually sent
+// (m.emailDraft.sent) - never a separate flag to keep in sync - task steps
+// track their own done/doneAt, same shape as a CTA's follow-up steps.
+function msStepIsDone(m,s){ return s.type==='email' ? !!(m.emailDraft&&m.emailDraft.sent) : !!s.done; }
+function msIsDone(m){ return ensureMsSteps(m).every(s=>msStepIsDone(m,s)); }
 // Status overrides the resource-kind color the moment there's real movement:
 // black/red/blue (msTlNodeKind) describes what a NOT-YET-ACTED-ON step
-// implies doing; once the email actually goes out it turns amber ("pending"
-// - sent, awaiting the outcome), and once the milestone is marked done it
-// turns green ("resolved") - same red/yellow/green progression an escalation
-// or CTA already shows elsewhere, just driven by the plan's own send/done
-// state instead of a separate trigger record.
+// implies doing; once at least one real step completes it turns amber
+// ("pending" - in progress), and once every step is done it turns green
+// ("resolved") - same red/yellow/green progression an escalation or CTA
+// already shows elsewhere, just driven by the milestone's own steps instead
+// of a separate trigger record.
 function msTlStatusClass(m){
-  if(m.done) return 'ms-resolved';
-  if(m.emailDraft && m.emailDraft.sent) return 'ms-pending';
+  if(msIsDone(m)) return 'ms-resolved';
+  if(ensureMsSteps(m).some(s=>msStepIsDone(m,s))) return 'ms-pending';
   return null;
 }
 function msTimelineHtml(p){
@@ -4914,20 +5060,24 @@ function msTimelineHtml(p){
   const ms=[...p.milestones].sort((x,y)=>(x.due||'9999')<(y.due||'9999')?-1:1);
   const items=ms.map((m,i)=>{
     const pos=i%2===0?'above':'below';
+    // Black/yellow only now: plain (nothing done yet) stays black, anything
+    // with real movement (kind implies an action, or a step has actually
+    // been worked) lights up yellow - same accent color the rest of the app
+    // already uses for active/highlighted state, not a separate color per
+    // resource type.
+    const active=msTlNodeKind(m)!=null || ensureMsSteps(m).some(s=>msStepIsDone(m,s));
+    const cls=(active?' ms-active':'')+(msIsDone(m)?' done':'');
     const kind=msTlNodeKind(m);
-    const statusCls=msTlStatusClass(m);
-    const colorCls=statusCls||kind;
-    const cls=(colorCls?' '+colorCls:'')+(m.done?' done':'');
-    const title=statusCls==='ms-resolved'?'Resolved':statusCls==='ms-pending'?'Pending — email sent, awaiting outcome':kind==='engagement'?'Opens the account\'s active escalation/CTA':kind==='email'?'Opens an email draft':'Opens step details';
+    const title=msIsDone(m)?'Resolved':msTlStatusClass(m)==='ms-pending'?'In progress':kind==='engagement'?'Opens the account\'s active escalation/CTA':kind==='email'?'Opens an email draft':'Opens step details';
     return `<div class="ms-tl-item ${pos}">
-      <div class="ms-tl-box${cls}" onclick="openPlanMilestoneNode('${p.acctId}','${m.id}')" title="${title}">${m.source==='predictive'?'<span class="pill p-violet" style="margin-right:4px;font-size:10px">Predictive</span>':''}${esc(m.title)}</div>
-      <div class="ms-tl-stem${colorCls?' '+colorCls:''}"></div>
+      <div class="ms-tl-box${cls}" onclick="openPlanMilestoneNode('${p.acctId}','${m.id}')" title="${title}">${m.source==='predictive'?'<span class="ms-predictive-dot" title="From a Predictive Insight">P</span> ':''}${esc(m.title)}</div>
+      <div class="ms-tl-stem${active?' ms-active':''}"></div>
       <div class="ms-tl-dot${cls}" onclick="openPlanMilestoneNode('${p.acctId}','${m.id}')"></div>
       <div class="ms-tl-date">${m.due?esc(fmtDate(m.due)):'no date'}</div>
     </div>`;
   }).join('');
-  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Timeline <span class="hint">blue = active escalation/CTA, red = email draft, amber = sent/pending, green = resolved · violet tag = from a Predictive Insight</span></h3>
-    <div class="ms-timeline">${items}</div>
+  return `<div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Timeline <span class="hint">black = not started, yellow = in progress or resolved · purple P = from a Predictive Insight</span></h3>
+    <div class="ms-timeline"><div class="ms-timeline-track">${items}</div></div>
   </div>`;
 }
 // Where a forward-looking timeline node actually takes you - a milestone
@@ -4942,15 +5092,28 @@ function openPlanMilestoneNode(acctId,mid){
   if(engRes){ viewEngagementForAccount(engRes.id); return; }
   openPlanMilestonePage(acctId,mid);
 }
+// No manual "mark done" here anymore - completion is read-only, derived
+// from whether the milestone's own chevron steps (see ensureMsSteps) are
+// actually all done, same as msIsDone drives the timeline bubble color.
+// Predictive-sourced milestones render identically to every other milestone
+// row - the only difference is a small purple "P" badge next to the title,
+// not a separate grid item (a full-width pill here previously broke the
+// row's column count and wrapped the whole row onto extra lines).
 function msRow(id,m){
   const rc=(m.resources||[]).length;
-  return `<div class="milestone${m.done?' done':''}" data-ms="${m.id}">
-    <input type="checkbox" ${m.done?'checked':''} onchange="togglePlanMs('${id}','${m.id}',this.checked)">
-    ${m.source==='predictive'?'<span class="pill p-violet" style="font-size:10px">Predictive</span>':''}
-    <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${id}','${m.id}',this.value)">
+  const done=msIsDone(m);
+  const stepsDone=ensureMsSteps(m).filter(s=>msStepIsDone(m,s)).length;
+  const totalSteps=m.steps.length;
+  const statusCls=done?'p-green':stepsDone>0?'p-amber':'p-gray';
+  return `<div class="milestone${done?' done':''}" data-ms="${m.id}">
+    <span class="pill ${statusCls}" style="justify-self:center" title="${stepsDone} of ${totalSteps} steps complete - open the milestone to work them">${done?'✓':stepsDone+'/'+totalSteps}</span>
+    <div style="display:flex;align-items:center;gap:6px;min-width:0">
+      ${m.source==='predictive'?`<span class="ms-predictive-dot" title="From a Predictive Insight">P</span>`:''}
+      <input type="text" style="flex:1;min-width:0" value="${esc(m.title)}" onchange="editPlanMsTitle('${id}','${m.id}',this.value)">
+    </div>
     <input type="date" value="${esc(m.due||'')}" onchange="editPlanMsDue('${id}','${m.id}',this.value)">
     <button class="btn sm" onclick="openPlanMilestoneNode('${id}','${m.id}')">Open${rc?` · ${rc}`:''}</button>
-    <button class="btn sm" onclick="removePlanMs('${id}','${m.id}')">Remove</button>
+    <button class="btn sm icon-x" onclick="removePlanMs('${id}','${m.id}')" title="Remove milestone">✕</button>
   </div>`;
 }
 // ---- Plan milestone detail (click into a milestone) - full page, same
@@ -4971,6 +5134,7 @@ function openPlanMilestonePage(acctId,mid){
   currentAcctView=null; currentEngagementCtaId=null; currentCsmView=null; currentPredictiveAcctId=null;
   currentPlanAcctId=acctId;
   currentPlanMilestone={acctId,mid};
+  msExpandedStepId=null;
   // Lazily seed a real, unsent draft the first time this step's page opens
   // (if it carries an email template) - same "prefilled, not blank" pattern
   // the CTA chevron and risk-board actions already use, so there's something
@@ -4984,7 +5148,7 @@ function openPlanMilestonePage(acctId,mid){
   route();
   window.scrollTo(0,0);
 }
-function closePlanMilestone(){ currentPlanMilestone=null; route(); window.scrollTo(0,0); }
+function closePlanMilestone(){ currentPlanMilestone=null; msExpandedStepId=null; route(); window.scrollTo(0,0); }
 function renderPlanMilestonePage(){
   const {acctId,mid}=currentPlanMilestone||{};
   const p=plans[acctId]; const a=STATE.accounts.find(x=>x.id===acctId);
@@ -4993,9 +5157,70 @@ function renderPlanMilestonePage(){
   $('#scopebar').style.display='none';
   $('#app').innerHTML=planMilestonePageHtml(acctId,p,a,m);
 }
+// ---- Milestone chevron - mirrors ctaStepperHtml's linear (non-branch) shape:
+// click a step to expand it, one panel open at a time, done/current/pending-
+// locked coloring. The email step's panel IS the draft-email card built
+// earlier; task steps get a plain mark-done panel. This is deliberately the
+// same visual language as an engagement CTA's chevron.
+let msExpandedStepId=null;
+function msToggleStepPanel(stepId){ msExpandedStepId = msExpandedStepId===stepId?null:stepId; route(); }
+function msStepperHtml(acctId,m){
+  const steps=ensureMsSteps(m);
+  const doneCount=steps.filter(s=>msStepIsDone(m,s)).length;
+  const firstOpenIdx=steps.findIndex(s=>!msStepIsDone(m,s));
+  let expandedIdx=steps.findIndex(s=>s.id===msExpandedStepId);
+  if(expandedIdx<0) expandedIdx=firstOpenIdx;
+  const chevron=(s,i)=>{
+    const sDone=msStepIsDone(m,s);
+    const cls=sDone?'done':(i===firstOpenIdx?'current':'pending-locked');
+    const completedAt=s.type==='email'?(m.emailDraft&&m.emailDraft.sentAt):s.doneAt;
+    const marker=sDone?`<span class="ce-step-marker" title="Completed ${esc(fmtDate(completedAt))}"></span>`:'';
+    return `<div class="ce-step ${cls}${i===expandedIdx?' active':''}" onclick="msToggleStepPanel('${s.id}')" title="${esc(s.label)}">${marker}${esc(s.label)}</div>`;
+  };
+  return `<div class="mini" style="margin-bottom:2px">${doneCount} of ${steps.length} steps complete · click any step to work it or review it</div>
+  <div class="ce-stepper" id="msStepper">${steps.map((s,i)=>chevron(s,i)).join('')}</div>
+  ${expandedIdx>=0?msStepPanelHtml(acctId,m,steps[expandedIdx]):''}`;
+}
+function msStepPanelHtml(acctId,m,step){
+  const a=STATE.accounts.find(x=>x.id===acctId);
+  if(step.type==='email'){
+    if(!(m.emailDraft&&m.emailDraft.sent)){
+      return `<div class="card" style="box-shadow:none;margin:12px 0 0;border:1px solid var(--red)">
+        <h4 style="margin:0 0 8px">Draft email</h4>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <input type="text" id="msDraftTo_${m.id}" class="select" value="${esc(m.emailDraft?m.emailDraft.recipient:'')}" placeholder="Recipient">
+          <input type="text" id="msDraftSubject_${m.id}" class="select" value="${esc(m.emailDraft?m.emailDraft.subject:'')}" placeholder="Subject">
+          <textarea id="msDraftBody_${m.id}" class="select" rows="8" style="font:inherit">${esc(m.emailDraft?m.emailDraft.body:'')}</textarea>
+        </div>
+        <div class="row-actions" style="margin-top:10px">
+          <button type="button" class="btn sm primary" onclick="sendPlanMilestoneEmail('${acctId}','${m.id}')">Send</button>
+          ${a&&TEST10_ACCOUNTS.includes(a.name)?`<button type="button" class="btn sm" id="aiDraftBtn_ms_${m.id}" onclick="requestAiDraftForPlanMilestone('${acctId}','${m.id}')">Create AI draft</button>`:''}
+        </div>
+        <div id="aiDraftStatus_ms_${m.id}" class="mini" style="margin-top:6px;color:var(--muted2)"></div>
+      </div>`;
+    }
+    return `<div class="card" style="box-shadow:none;margin:12px 0 0;background:var(--panel2)">
+      <h4 style="margin:0 0 6px">Email sent</h4>
+      <p class="mini">Sent ${esc(fmtDate(m.emailDraft.sentAt))} to ${esc(m.emailDraft.recipient||'—')} — "${esc(m.emailDraft.subject||'')}"</p>
+    </div>`;
+  }
+  return `<div class="card" style="box-shadow:none;margin:12px 0 0">
+    <h4 style="margin:0 0 8px">${esc(step.label)}</h4>
+    <div class="row-actions">
+      <button class="btn ${step.done?'':'primary'} sm" onclick="toggleMsStepDone('${acctId}','${m.id}','${step.id}',${!step.done})">${step.done?'Mark not done':'Mark done'}</button>
+    </div>
+    ${step.done?`<p class="mini" style="margin-top:8px;color:var(--muted2)">Completed ${esc(fmtDate(step.doneAt))}</p>`:''}
+  </div>`;
+}
+function toggleMsStepDone(acctId,mid,stepId,done){
+  const p=plans[acctId]; if(!p) return; const m=p.milestones.find(x=>x.id===mid); if(!m) return;
+  const s=ensureMsSteps(m).find(x=>x.id===stepId); if(!s) return;
+  s.done=done; s.doneAt=done?new Date().toISOString():null;
+  touchPlan(acctId); route();
+}
 function planMilestonePageHtml(acctId,p,a,m){
-  const overdue=!m.done && daysSince(m.due)!=null && daysSince(m.due)>0;
-  const emailRes=planMilestoneEmailResource(m);
+  const done=msIsDone(m);
+  const overdue=!done && daysSince(m.due)!=null && daysSince(m.due)>0;
   const resRows=m.resources.length?m.resources.map((r,i)=>{
     let action='';
     if(r.kind==='talktrack') action=`<button class="btn sm" onclick="openTalkTrack('${r.id}','${acctId}','${m.id}')">Open talk track</button>`;
@@ -5003,30 +5228,11 @@ function planMilestonePageHtml(acctId,p,a,m){
     return `<div class="resrow"><span><span class="pill p-gray" style="margin-right:8px">${esc(STEP_RES_KINDS[r.kind]||r.kind)}</span><b>${esc(stepResLabel(r))}</b></span><span class="row-actions">${action}<button class="btn sm" onclick="removeStepResource('${acctId}','${m.id}',${i})">✕</button></span></div>`;
   }).join(''):'<p class="mini">No resources attached yet — add an email template, talk track or resource below.</p>';
   return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(m.title)} ${m.source==='predictive'?'<span class="pill p-violet">Predictive</span>':''}</h2>
-    <div class="mini">Success plan step · <span style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="openPlan('${acctId}')">${esc(a.name)}</span> · <span class="pill ${m.done?'p-green':overdue?'p-red':'p-amber'}">${m.done?'Complete':overdue?'Overdue':(m.due?'Due '+esc(m.due):'Open')}</span></div></div>
+    <div class="mini">Success plan step · <span style="cursor:pointer;text-decoration:underline;text-decoration-color:var(--yellow)" onclick="openPlan('${acctId}')">${esc(a.name)}</span> · <span class="pill ${done?'p-green':overdue?'p-red':'p-amber'}">${done?'Complete':overdue?'Overdue':(m.due?'Due '+esc(m.due):'Open')}</span></div></div>
     <button class="btn sm" onclick="openPlan('${acctId}')">← Back to plan</button></div></div>
   <div class="bd">
-    ${emailRes && m.emailDraft && !m.emailDraft.sent?`<div class="card" style="box-shadow:none;margin:0 0 16px;border:1px solid var(--red)">
-      <h4 style="margin:0 0 8px">Draft email — ${esc(stepResLabel(emailRes))}</h4>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        <input type="text" id="msDraftTo_${m.id}" class="select" value="${esc(m.emailDraft.recipient||'')}" placeholder="Recipient">
-        <input type="text" id="msDraftSubject_${m.id}" class="select" value="${esc(m.emailDraft.subject||'')}" placeholder="Subject">
-        <textarea id="msDraftBody_${m.id}" class="select" rows="8" style="font:inherit">${esc(m.emailDraft.body||'')}</textarea>
-      </div>
-      <div class="row-actions" style="margin-top:10px">
-        <button type="button" class="btn sm primary" onclick="sendPlanMilestoneEmail('${acctId}','${m.id}')">Send</button>
-        ${TEST10_ACCOUNTS.includes(a.name)?`<button type="button" class="btn sm" id="aiDraftBtn_ms_${m.id}" onclick="requestAiDraftForPlanMilestone('${acctId}','${m.id}')">Create AI draft</button>`:''}
-      </div>
-      <div id="aiDraftStatus_ms_${m.id}" class="mini" style="margin-top:6px;color:var(--muted2)"></div>
-    </div>`:''}
-    ${emailRes && m.emailDraft && m.emailDraft.sent?`<div class="card" style="box-shadow:none;margin:0 0 16px;background:var(--panel2);opacity:.85">
-      <h4 style="margin:0 0 6px">Email sent</h4>
-      <p class="mini">Sent ${esc(fmtDate(m.emailDraft.sentAt))} to ${esc(m.emailDraft.recipient||'—')} — "${esc(m.emailDraft.subject||'')}"</p>
-    </div>`:''}
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Progress</h3>${msStepperHtml(acctId,m)}</div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Step details</h3>
-      <div class="row-actions" style="margin-bottom:10px">
-        <button class="btn ${m.done?'':'primary'}" onclick="togglePlanStepDone('${acctId}','${m.id}',${!m.done})">${m.done?'Mark not done':'Mark done'}</button>
-      </div>
       <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:8px 0 4px">Title</label>
       <input type="text" value="${esc(m.title)}" onchange="editPlanMsTitle('${acctId}','${m.id}',this.value)" style="width:100%;border:1px solid var(--line);padding:8px 10px;border-radius:8px;font:inherit;background:var(--panel2);color:var(--ink)">
       <label class="mini" style="font-weight:700;color:var(--ink);display:block;margin:12px 0 4px">Due</label>
@@ -5045,21 +5251,22 @@ function planMilestonePageHtml(acctId,p,a,m){
         <button class="btn primary sm" onclick="addStepResourceFromPicker('${acctId}','${m.id}')">Attach</button>
       </div>
     </div>
-    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Step notes <span class="hint">what happened / what's next on this step</span></h3>
+    <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Milestone notes <span class="hint">what happened / what's next</span></h3>
       <textarea class="notes-in" placeholder="Progress, blockers, who owns the next action…" oninput="setStepNote('${acctId}','${m.id}',this.value)">${esc(m.note||'')}</textarea>
     </div>
   </div>`;
 }
 function setStepDetail(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.detail=v; touchPlan(id); } }
 function setStepNote(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.note=v; touchPlan(id); } }
-function togglePlanStepDone(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m){ m.done=done; touchPlan(id); route(); } }
 function addStepResource(id,mid,kind,refId){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m)return; m.resources=m.resources||[]; if(m.resources.some(r=>r.kind===kind&&r.id===refId)){ toast('Already attached to this step.'); return; } m.resources.push({kind,id:refId}); touchPlan(id); route(); }
 function addStepResourceFromPicker(id,mid){ const sel=document.getElementById('stepResPick'); if(!sel||!sel.value) return; const [kind,refId]=sel.value.split(':'); addStepResource(id,mid,kind,refId); }
 function removeStepResource(id,mid,idx){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(!m||!m.resources)return; m.resources.splice(idx,1); touchPlan(id); route(); }
 // Real send, right from the milestone page - same logging pattern every
 // other send in the app uses (emailDrafts entry so Customer Contact Insights
 // picks it up, activity touch, health rescore), tagged 'journey' so it also
-// surfaces on the Customer Success Emails tab.
+// surfaces on the Customer Success Emails tab. Sending IS what completes the
+// email step (msStepIsDone reads m.emailDraft.sent directly) - no separate
+// flag to keep in sync.
 function sendPlanMilestoneEmail(acctId,mid){
   const p=plans[acctId]; if(!p) return;
   const m=p.milestones.find(x=>x.id===mid); if(!m||!m.emailDraft) return;
@@ -5104,7 +5311,6 @@ function regenPlanAs(id,type){ if(!PLAN_TEMPLATES[type]) return; if(!confirm('Re
 function touchPlan(id){ if(plans[id]){ plans[id].updatedAt=new Date().toISOString(); savePlans(); } }
 function setPlanObjectives(id,v){ if(!plans[id])return; plans[id].objectives=v.split('\n').map(s=>s.trim()).filter(Boolean); touchPlan(id); }
 function setPlanNotes(id,v){ if(!plans[id])return; plans[id].notes=v; touchPlan(id); }
-function togglePlanMs(id,mid,done){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.done=done; touchPlan(id); route(); }
 function editPlanMsTitle(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.title=v; touchPlan(id); }
 function editPlanMsDue(id,mid,v){ const p=plans[id];if(!p)return; const m=p.milestones.find(x=>x.id===mid); if(m)m.due=v; touchPlan(id); route(); }
 function addPlanMs(id){ const p=plans[id];if(!p)return; p.milestones.push({id:'m'+Math.random().toString(36).slice(2,9),title:'New milestone',due:sfDate(new Date(Date.now()+14*864e5)),done:false}); touchPlan(id); route(); }
@@ -5143,7 +5349,7 @@ function viewWork(accts){
   Object.keys(plans).forEach(acctId=>{
     const a=byId[acctId]; if(!a) return;
     const p=plans[acctId];
-    const open=(p.milestones||[]).filter(m=>!m.done).sort((x,y)=>(x.due||'9999')<(y.due||'9999')?-1:1);
+    const open=(p.milestones||[]).filter(m=>!msIsDone(m)).sort((x,y)=>(x.due||'9999')<(y.due||'9999')?-1:1);
     const next=open[0]; if(!next) return;
     const overdueDays=next.due?daysSince(next.due):null;
     const isOverdue=overdueDays!=null && overdueDays>0;
@@ -5280,10 +5486,7 @@ function viewModel(accts){
   const r=rollup(accts);
   return `${orgConfigSlotSwitcherHtml()}
   ${orgConfigChatHtml()}
-  <div class="card callout"><h3 style="border:none;margin:0 0 8px">A note on health scores <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
-  <p class="mini" style="line-height:1.7">"I'm not a fan of health scores... health scores are not what they're cracked up to be." A single 0–100 number is easy to game and easy to misread — it's kept here for continuity and as one input among several, but it is intentionally <b>not</b> the headline metric anymore. The Home and Command Center views now lead with engagement, growth and customer insights instead. Use this tab to tune the score if it's still useful to your team, or largely ignore it in favor of the CSM Scorecard, Case Watch and Engagement tabs.</p>
-  </div>
-  <div class="card"><h3>Health-score model</h3>
+  <div class="card"><h3>Health-score model <span class="sortbar">${ceTest10ToggleHtml()}</span></h3>
   <p class="mini">Every account starts at 100. These penalties subtract from it based on live signals. This transparency is the point: the score is never a black box.</p>
   ${sl('openCase','Per open case',5)}
   ${sl('highSev','Per high/urgent case',15)}
@@ -5345,7 +5548,7 @@ function csmStaleWork(ownerName){
   Object.keys(plans).forEach(pid=>{
     const p=plans[pid]; if(!acctIds.has(p.acctId)) return;
     (p.milestones||[]).forEach(m=>{
-      if(m.done) return;
+      if(msIsDone(m)) return;
       const overdue=daysSince(m.due);
       if(overdue!=null && overdue>0){
         const a=STATE.accounts.find(x=>x.id===p.acctId);
@@ -7010,9 +7213,9 @@ function usageCard(a){
       <div class="progress"><i style="width:${Math.min(100,cp)}%;background:${cp>=100?'var(--green)':cp>=70?'var(--amber)':'var(--red)'}"></i></div>
       <p class="mini" style="margin-top:6px">${fmtFull(u.commAttained)} attained of ${fmtFull(u.commTarget)} target${cp>=100?' — goal met':''}.</p>
     </div>`:''}
-    ${prods.length?`<p class="mini" style="font-weight:700;color:var(--ink);margin:16px 0 6px">By product</p>
+    ${prods.length?`<p class="mini" style="font-weight:700;color:var(--ink);margin:16px 0 6px">By product <span class="hint">click a row to see this product line across the whole book</span></p>
     <table><thead><tr><th>Product</th><th class="num">Active</th><th class="num">Licensed</th><th class="num">Adoption</th></tr></thead><tbody>
-    ${prods.map(p=>{const pc=p.pct==null?null:(p.pct>=adoptionCfg.adoptingPct?'p-green':p.pct<adoptionCfg.atRiskPct?'p-red':'p-amber');return `<tr style="cursor:default"><td><b>${esc(prodName(p.family))}</b></td><td class="num">${(p.active||0).toLocaleString()}</td><td class="num">${(p.licensed||0).toLocaleString()}</td><td class="num">${p.pct==null?'—':`<span class="pill ${pc}">${p.pct}%</span>`}</td></tr>`;}).join('')}
+    ${prods.map(p=>{const pc=p.pct==null?null:(p.pct>=adoptionCfg.adoptingPct?'p-green':p.pct<adoptionCfg.atRiskPct?'p-red':'p-amber');return `<tr onclick="viewProductFamilyFromAccount('${attrStr(p.family)}')" style="cursor:pointer"><td><b>${esc(prodName(p.family))}</b></td><td class="num">${(p.active||0).toLocaleString()}</td><td class="num">${(p.licensed||0).toLocaleString()}</td><td class="num">${p.pct==null?'—':`<span class="pill ${pc}">${p.pct}%</span>`}</td></tr>`;}).join('')}
     </tbody></table>`:''}
     <p class="mini" style="margin-top:10px;color:var(--muted)">Source: product-analytics Snowflake → Sigma. Modeled here as a periodic export; wire the live feed in later without touching this view.</p>
   </div>`;
@@ -7042,14 +7245,22 @@ function acctPageHtml(a){
   const resolvedRate = a.lifeCases>0 ? Math.round((a.lifeCases-a.openCases)/a.lifeCases*100) : null;
   const sentColor = a.sentiment==null?'var(--muted)':a.sentTier==='pos'?'var(--green)':a.sentTier==='neu'?'var(--amber)':'var(--red)';
   const hasPlan=!!plans[id];
-  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(a.name)} ${stateTag(a)}</h2><div class="mini" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">Owner ${ownerCell(a.ownerName)}${a.ownerTitle?' ('+esc(a.ownerTitle)+')':''}${newLogo(a)?' · <b>New logo</b>':''} · ${segmentPill(a)} ${cadencePill(a)} ${opportunityPill(a)}${a.industry?' · '+esc(a.industry)+(a.employeeCount?' · ~'+a.employeeCount.toLocaleString()+' employees':''):''}</div></div><button class="btn sm" onclick="closeAcctView()">← Back</button></div></div>
+  return `<div class="card acct-hd"><div class="hd"><div><h2>${esc(a.name)} ${stateTag(a)}</h2><div class="mini acct-facts">
+    <span class="acct-fact-owner">Owner ${ownerCell(a.ownerName)}${a.ownerTitle?`<span class="mini" style="color:var(--muted2)"> (${esc(a.ownerTitle)})</span>`:''}</span>
+    ${newLogo(a)?'<span class="pill p-blue">New logo</span>':''}
+    ${segmentPill(a)}
+    ${cadencePill(a)}
+    ${opportunityPill(a)}
+    ${a.industry?`<span class="pill p-gray">${esc(a.industry)}</span>`:''}
+    ${a.employeeCount?`<span class="pill p-gray">~${a.employeeCount.toLocaleString()} employees</span>`:''}
+  </div></div><button class="btn sm" onclick="closeAcctView()">← Back</button></div></div>
   <div class="bd">
     <div class="row-actions" style="margin-bottom:16px">
       <button type="button" class="btn" onclick="viewEngagementForAccount('${a.id}')">View Engagement</button>
       <button type="button" class="btn" onclick="viewRiskForAccount('${a.id}')">View Accounts &amp; Risk</button>
       <button type="button" class="btn primary" onclick="createOrOpenPlan('${a.id}')">${hasPlan?'View Success Plan':'Create Success Plan'}</button>
     </div>
-    <div class="kpis" style="margin-bottom:16px">
+    <div class="kpis">
       <div class="kpi"><div class="l">Health</div><div class="v" style="color:${a.health==null?'var(--muted)':a.health>=75?'var(--green)':a.health>=50?'var(--amber)':'var(--red)'}">${a.health==null?'—':a.health}</div><div class="d">${tierPill(a.tier)}</div></div>
       <div class="kpi"><div class="l">CSAT</div><div class="v" style="color:${csatColor(c.v)}">${c.v==null?'—':c.v+'%'}</div><div class="d">${c.v==null?'no data':csatFace(c.v)+(c.src==='placeholder'?' · placeholder':' · set by CSM')}</div></div>
       <div class="kpi"><div class="l">NPS</div><div class="v" style="color:${a.nps==null?'var(--muted)':a.nps>=9?'var(--green)':a.nps>=7?'var(--amber)':'var(--red)'}">${a.nps==null?'—':a.nps+'/10'}</div><div class="d">${a.nps==null?'no survey response':npsClassify(a.nps)+(a.npsDate?' · '+esc(a.npsDate):'')}${orgFeatureFlags.npsTrend&&a.npsHistory?' · trend '+a.npsHistory.map(h=>h.score).join('→'):''}</div></div>
@@ -7068,7 +7279,7 @@ function acctPageHtml(a){
 
     <div class="full">${teamRosterCard(a)}</div>
 
-    ${orgFeatureFlags.productLineScorecard?`<div class="full">${productScorecardCardHtml(a)}</div>`:''}
+    <div class="full">${productScorecardCardHtml(a)}</div>
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Customer satisfaction (CSAT)</h3>
       <div class="csat-wrap">
@@ -7084,23 +7295,23 @@ function acctPageHtml(a){
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Renewal readiness <span class="hint">${a.readiness}% ready to renew</span></h3>
       <div class="progress"><i style="width:${a.readiness}%"></i></div>
-      <div class="comp" style="grid-template-columns:1fr auto;margin-top:12px">
+      <div class="comp">
         ${readinessChecklist(a).map(c=>`<div>${esc(c[0])}</div><div class="${c[1]?'pos':'neg'}">${c[1]?'✓':'—'}</div>`).join('')}
       </div>
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Purchase history & lifetime value</h3>
-      <div class="comp" style="grid-template-columns:1fr auto;margin-bottom:12px">
+      <div class="comp">
         <div>Annualized revenue (closed-won)</div><div class="pos">${fmtFull(a.ltv)}</div>
         <div>Closed-won deals</div><div><b>${a.pastDeals}</b></div>
         <div>First purchase</div><div><b>${a.firstPurchase?esc(a.firstPurchase):'—'}</b></div>
         <div>Most recent purchase</div><div><b>${a.lastPurchase?esc(a.lastPurchase):'—'}</b></div>
       </div>
-      <div class="chartbox" style="height:220px;margin-bottom:14px"><canvas id="acctDealsChart"></canvas></div>
+      <div class="chartbox" style="height:210px;margin-top:14px;margin-bottom:14px"><canvas id="acctDealsChart"></canvas></div>
       <div id="acctDeals"><div class="mini">Loading recent deals…</div></div>
     </div>
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Products purchased</h3>
-      <div class="chartbox" style="height:220px;margin-bottom:14px"><canvas id="acctProdChart"></canvas></div>
+      <div class="chartbox" style="height:210px;margin-bottom:14px"><canvas id="acctProdChart"></canvas></div>
       <div id="acctProducts"><div class="mini">Loading products…</div></div>
     </div>
 
@@ -7120,8 +7331,8 @@ function acctPageHtml(a){
       ${a.sentiment==null
         ? '<p class="mini">No support-case history on record for this account.</p>'
         : `<div style="display:flex;align-items:center;gap:16px;margin-bottom:12px"><div style="font-size:34px;font-weight:800;color:${sentColor};font-variant-numeric:tabular-nums">${a.sentiment}</div><div>${sentPill(a)}<div class="mini" style="margin-top:4px">0 = heavy friction · 100 = smooth</div></div></div>
-        <div class="chartbox" style="height:200px;margin-bottom:14px"><canvas id="acctCaseChart"></canvas></div>
-        <div class="comp" style="grid-template-columns:1fr auto">
+        <div class="chartbox" style="height:210px;margin-bottom:14px"><canvas id="acctCaseChart"></canvas></div>
+        <div class="comp">
           <div>Lifetime support cases</div><div><b>${a.lifeCases.toLocaleString()}</b></div>
           <div>High / urgent tickets</div><div class="${a.lifeHigh>0?'neg':''}">${a.lifeHigh.toLocaleString()} (${Math.round(a.lifeHigh/a.lifeCases*100)}%)</div>
           <div>Escalated tickets</div><div class="${a.lifeEsc>0?'neg':''}">${a.lifeEsc.toLocaleString()} (${Math.round(a.lifeEsc/a.lifeCases*100)}%)</div>
@@ -7131,7 +7342,7 @@ function acctPageHtml(a){
     </div>
 
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Health breakdown</h3>
-      <div class="chartbox" style="height:200px;margin-bottom:14px"><canvas id="acctHealthChart"></canvas></div>
+      <div class="chartbox" style="height:210px;margin-bottom:14px"><canvas id="acctHealthChart"></canvas></div>
       <div class="comp"><div><b>Base</b></div><div class="pos">100</div>${compRows}<div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>Score</b></div><div style="border-top:1px solid var(--line-soft);padding-top:6px"><b>${a.health}</b></div></div></div>
     </div>
     <div class="card" style="box-shadow:none;margin:0 0 16px"><h3>Open renewals</h3><table><tbody>${opps.map(o=>`<tr style="cursor:default"><td>${esc(o.name)}</td><td>${esc(o.stage)}</td><td class="num">${fmtMoney(o.amount)}</td><td class="num">${esc(o.close)}</td></tr>`).join('')}</tbody></table></div>
@@ -7663,7 +7874,14 @@ function viewEmails(accts){
   const ownerAccts=[...accts].sort((a,b)=>a.name<b.name?-1:1);
   const d=emailCompose;
   const tpl=d?EMAIL_TEMPLATES.find(t=>t.id===d.templateId):null;
-  const hist=emailDrafts.slice(0,12);
+  // Scoped to whatever accounts are actually in view (all of them normally,
+  // just the 10 pilot accounts when Test10 is on) - without this, "Recently
+  // prepared" pulled the most-recent-12 across the WHOLE book regardless of
+  // the Test10 toggle, so an unrelated account's email could leak into the
+  // Test10 view. Entries with no account (general/internal drafts) always
+  // show - they're not tied to any account to leak.
+  const acctIdsInScope=new Set(accts.map(a=>a.id));
+  const hist=emailDrafts.filter(h=>!h.acctId||acctIdsInScope.has(h.acctId)).slice(0,12);
 
   const custTpls=templates.filter(t=>t.audience==='customer');
   const intTpls=templates.filter(t=>t.audience==='internal');
@@ -7791,8 +8009,8 @@ renderNav();
 Object.assign(window,{setScope,openAcct,closeSheet,setRenewSort,setWeight,saveWeights,resetWeights,filterTable,toggleComm,setTab,
   setEscStatus,
   setEscReason,setEscProduct,toggleEscStep,
-  setCsat,createOrOpenPlan,openPlan,closePlan,setPlanObjectives,setPlanNotes,togglePlanMs,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
-  openPlanMilestoneNode,openPlanMilestonePage,closePlanMilestone,setStepDetail,setStepNote,togglePlanStepDone,addStepResource,addStepResourceFromPicker,removeStepResource,sendPlanMilestoneEmail,requestAiDraftForPlanMilestone,openTalkTrack,copyTalkTrack,regenPlanAs,
+  setCsat,createOrOpenPlan,openPlan,closePlan,toggleObjectivesEdit,setPlanObjectives,setPlanNotes,editPlanMsTitle,editPlanMsDue,addPlanMs,removePlanMs,regenPlan,delPlan,
+  openPlanMilestoneNode,openPlanMilestonePage,closePlanMilestone,setStepDetail,setStepNote,msToggleStepPanel,toggleMsStepDone,addStepResource,addStepResourceFromPicker,removeStepResource,sendPlanMilestoneEmail,requestAiDraftForPlanMilestone,openTalkTrack,copyTalkTrack,regenPlanAs,
   setOwnerFilter,quickCta,
   addInsight,delResource,submitResource,setTarget,setAdoptionCfg,setUsageKpi,
   logActivity,delActivity,saveNextStep,clearNextStep,
