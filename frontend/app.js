@@ -1988,14 +1988,14 @@ function riskWeightsPanelHtml(){
 // this needs actual judgment (which org's context applies, does the request
 // fit the fixed pipeline) every time, so there's no manual fallback for it;
 // it just requires ANTHROPIC_API_KEY to be set. ----
-let orgConfigChatLog=[]; // session-only: [{role,text,matchedOrg,diff,limitation,applied}]
+let orgConfigChatLog=[]; // session-only: [{role,text,matchedOrg,diff,limitation,explanation,applied}]
 function orgConfigChatHtml(){
   const entries=orgConfigChatLog.map((e,i)=>{
     if(e.role==='user') return `<div class="mini" style="margin:10px 0 4px"><b>You:</b> ${esc(e.text)}</div>`;
     return `<div class="card" style="box-shadow:none;margin:4px 0 10px;border:1px solid ${e.limitation?'var(--amber)':'var(--violet)'}">
       <div class="mini" style="margin-bottom:4px">${e.matchedOrg?`<span class="pill p-violet">${esc(e.matchedOrg)}</span>`:''}${e.limitation?' <span class="pill p-amber">Not supported as-is</span>':''}${e.applied?' <span class="pill p-green">Applied</span>':''}</div>
-      <p class="mini" style="font-weight:600;color:var(--ink);margin-bottom:4px">${e.limitation?'Why this doesn\'t fit:':'What this changes:'}</p>
-      <p class="mini">${esc(e.text)}</p>
+      ${e.limitation?`<p class="mini" style="font-weight:600;color:var(--ink);margin-bottom:4px">Why this doesn't fit:</p><p class="mini" style="margin-bottom:${e.explanation?'10px':'0'}">${esc(e.limitation)}</p>`:''}
+      ${e.explanation?`${e.diff?'<p class="mini" style="font-weight:600;color:var(--ink);margin-bottom:4px">What this changes:</p>':''}<p class="mini">${esc(e.explanation)}</p>`:''}
       ${e.diff?`<p class="mini" style="margin:10px 0 4px;color:var(--muted2)">Config diff (JSON) — this is exactly what "Apply" will write:</p>
         <pre class="mini" style="white-space:pre-wrap;background:var(--panel);padding:8px;border-radius:6px;max-height:200px;overflow:auto">${esc(JSON.stringify(e.diff,null,2))}</pre>
         <div class="row-actions" style="margin-top:8px">${e.applied?'':`<button type="button" class="btn sm primary" onclick="applyOrgConfigChatDiff(${i})">Apply this change</button>`}</div>`:''}
@@ -2018,7 +2018,7 @@ async function requestOrgConfigChat(){
   const input=$('#orgConfigChatInput'); const msg=(input&&input.value||'').trim();
   if(!msg) return;
   const btn=$('#orgConfigChatBtn'), statusEl=$('#orgConfigChatStatus');
-  const history=orgConfigChatLog.map(e=>({role:e.role,text:e.text,diff:e.diff||null}));
+  const history=orgConfigChatLog.map(e=>({role:e.role,text:e.role==='user'?e.text:[e.explanation,e.limitation].filter(Boolean).join(' '),diff:e.diff||null}));
   orgConfigChatLog.push({role:'user',text:msg});
   if(input) input.value='';
   if(btn){ btn.disabled=true; btn.textContent='Thinking…'; }
@@ -2026,9 +2026,16 @@ async function requestOrgConfigChat(){
   try{
     const res=await fetch('/api/org-config-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,currentConfig:JSON.stringify(currentConfigBundle()),history})});
     const d=await res.json();
-    if(!res.ok){ orgConfigChatLog.push({role:'assistant',text:d.detail||'Could not process that request.'}); }
-    else{ orgConfigChatLog.push({role:'assistant',text:d.limitation||d.explanation,matchedOrg:d.matchedOrg,diff:d.diff,limitation:d.limitation}); }
-  }catch(e){ orgConfigChatLog.push({role:'assistant',text:'Could not reach the backend.'}); }
+    // explanation and limitation are kept as two separate fields (never
+    // merged into one) - a mixed request (one disallowed core-trigger ask
+    // bundled with other valid changes) needs to show BOTH: why the core
+    // part was refused AND, separately, the plain-English summary of
+    // everything else that still applies. Merging them with || used to
+    // silently drop the "what changes" explanation whenever a limitation
+    // was present, even though the diff below it still had real content.
+    if(!res.ok){ orgConfigChatLog.push({role:'assistant',explanation:d.detail||'Could not process that request.'}); }
+    else{ orgConfigChatLog.push({role:'assistant',explanation:d.explanation,limitation:d.limitation,matchedOrg:d.matchedOrg,diff:d.diff}); }
+  }catch(e){ orgConfigChatLog.push({role:'assistant',explanation:'Could not reach the backend.'}); }
   if(btn){ btn.disabled=false; btn.textContent='Ask'; }
   route();
   setTimeout(()=>{ const el=$('#orgConfigChatInput'); if(el) el.focus(); },50);
@@ -3418,20 +3425,30 @@ async function confirmSendAutomation(which){
   requestAnimationFrame(()=>{ if(ring) ring.classList.add('animating'); });
   const tpl=automationEmailTemplate(which);
   const RING_MS=1600;
-  const sendAllPromise=(async()=>{
-    let sentCount=0;
-    for(const t of targets){
-      const filled=fillAutomationTemplate(tpl,t.name,t.csm);
-      try{
-        const res=await fetch('/api/automation/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'axongainsightrp@gmail.com',subject:filled.subject,bodyHtml:filled.bodyHtml})});
-        if(res.status===401) return {unauth:true};
-        const d=await res.json();
-        if(d.sent) sentCount++;
-      }catch(e){ /* keep going - report the partial count below */ }
-    }
+  // Sent in parallel, not one-at-a-time - a sequential loop over every Test10
+  // target meant the real network time could run far past the ring's fixed
+  // 1.6s fill animation, so the ring would finish tracing while sends were
+  // still trickling out one by one, reading as a stall.
+  let unauthHit=false;
+  const sendAllPromise=Promise.all(targets.map(async t=>{
+    const filled=fillAutomationTemplate(tpl,t.name,t.csm);
+    try{
+      const res=await fetch('/api/automation/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:'axongainsightrp@gmail.com',subject:filled.subject,bodyHtml:filled.bodyHtml})});
+      if(res.status===401){ unauthHit=true; return false; }
+      const d=await res.json();
+      return !!d.sent;
+    }catch(e){ return false; }
+  })).then(results=>{
+    if(unauthHit) return {unauth:true};
+    const sentCount=results.filter(Boolean).length;
     return {sent:sentCount>0,sentCount,total:targets.length};
-  })();
-  const [data]=await Promise.all([sendAllPromise,new Promise(r=>setTimeout(r,RING_MS))]);
+  });
+  // If the parallel sends still run long (Gmail latency, many targets), keep
+  // the ring visibly pulsing past RING_MS instead of freezing at "done" while
+  // nothing has actually happened yet.
+  const ringDone=new Promise(r=>setTimeout(r,RING_MS)).then(()=>{ if(ring && fab.classList.contains('sending')) ring.classList.add('waiting'); });
+  const [data]=await Promise.all([sendAllPromise,ringDone]);
+  if(ring) ring.classList.remove('waiting');
   if(data.unauth){ goToLogin(); return; }
   fab.classList.remove('sending');
   if(data.sent){
@@ -7046,7 +7063,7 @@ function viewUsage(accts){
   <div class="card"><h3>Accounts by adoption <span class="hint">lowest adoption first${usageKpiFilter?' · filtered':''}</span></h3>
   <div class="searchbar"><input id="usearch" placeholder="Filter accounts…" oninput="filterTable(this,'utbl')"></div>
   <table id="utbl"><thead><tr><th>Account</th><th>Owner</th><th class="num">Adoption</th><th class="num">Active / Licensed</th><th class="num">Trend</th><th class="num">To goal</th><th class="num">Synced</th></tr></thead><tbody>
-  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td>${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td>${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
+  ${sorted.map(a=>{const u=a.usage;const cp=commissionPct(a);return `<tr onclick="openAcct('${a.id}')"><td><b>${esc(a.name)}</b> ${stateTag(a)}</td><td>${ownerCell(a.ownerName)}</td><td class="num">${adoptionPill(a)}</td><td class="num">${(u.active||0).toLocaleString()} / ${(u.licensed||0).toLocaleString()}</td><td class="num">${usageTrendHtml(u.trend)}</td><td class="num">${cp==null?'—':commissionPill(a)}</td><td class="num">${u.sync?esc(fmtDate(u.sync)):'—'}</td></tr>`;}).join('')}
   </tbody></table>
   ${sorted.length?'':'<p class="mini">No accounts with usage data match this filter.</p>'}
   <p class="mini" style="margin-top:12px;color:var(--muted)">Source: product-analytics Snowflake → Sigma, modeled as a periodic export. Swap in the live connection later — nothing above needs to change since it reads the same <code>ProductUsage__c</code> shape.</p>

@@ -116,10 +116,10 @@ html[data-theme="dark"] .flyout-btn.active{background:rgba(255,230,0,.1);border-
   background:var(--red);color:#fff;font-size:10px;font-weight:800;border-radius:8px}
 .flyout-btn.active .b{background:var(--yellow);color:#000}
 .main{flex:1;min-width:0}
-.inner{padding:20px 28px 0}
+.inner{padding:19px 28px 0}
 
 .scopebar{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:18px 0 16px;box-shadow:var(--shadow-sm)}
+  padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 16px;box-shadow:var(--shadow-sm)}
 .crumb{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12.5px}
 .crumb button{border:none;background:none;color:var(--muted);cursor:pointer;font:inherit;padding:3px 5px;font-weight:600}
 .crumb button:hover{color:#000;background:var(--yellow)}
@@ -275,6 +275,8 @@ tbody tr:hover{background:rgba(255,230,0,.12)}
 .send-ring-fg{fill:none;stroke:var(--green);stroke-width:3;stroke-dasharray:144.5;stroke-dashoffset:144.5;
   transform-origin:24px 24px;transform:rotate(90deg)}
 .send-ring-fg.animating{stroke-dashoffset:0;transition:stroke-dashoffset 1.6s linear}
+.send-ring-fg.waiting{animation:sendRingPulse 1s ease-in-out infinite}
+@keyframes sendRingPulse{0%,100%{opacity:1}50%{opacity:.35}}
 .send-icon-check{stroke:var(--green);transition:stroke .2s}
 .send-fab.sent .send-fab-bg{fill:var(--green)}
 .send-fab.sent .send-icon-check{stroke:#fff}

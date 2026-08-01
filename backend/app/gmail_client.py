@@ -8,6 +8,7 @@ bare service account can't do without Workspace domain-wide delegation.
 from __future__ import annotations
 
 import base64
+import threading
 from email.mime.text import MIMEText
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,15 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 TOKEN_PATH = BACKEND_DIR / "gmail_token.json"
 SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"]
+
+# The cached googleapiclient service wraps an httplib2.Http connection that
+# isn't safe to share across threads - FastAPI runs sync endpoints in a
+# threadpool, so firing several sends at once (e.g. the automation "send to
+# all Test10 accounts" button) hit this same cached service concurrently and
+# a chunk of them would fail with connection-level errors. Serializing actual
+# Gmail API calls through one lock fixes that without giving up the frontend
+# firing all the requests in parallel.
+_gmail_lock = threading.Lock()
 
 
 class GmailUnavailable(RuntimeError):
@@ -40,8 +50,9 @@ def _service():
         )
     creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        TOKEN_PATH.write_text(creds.to_json())
+        with _gmail_lock:
+            creds.refresh(Request())
+            TOKEN_PATH.write_text(creds.to_json())
     try:
         return build("gmail", "v1", credentials=creds)
     except Exception as e:  # noqa: BLE001
@@ -56,7 +67,8 @@ def send_email(to_addr: str, subject: str, body_html: str) -> str:
     msg["subject"] = subject
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     try:
-        result = svc.users().messages().send(userId="me", body={"raw": raw}).execute()
+        with _gmail_lock:
+            result = svc.users().messages().send(userId="me", body={"raw": raw}).execute()
     except Exception as e:  # noqa: BLE001
         raise GmailUnavailable(f"Send failed: {e}") from e
     return result.get("id", "")
@@ -68,21 +80,22 @@ def list_recent_inbox(max_results: int = 15) -> list[dict]:
     fetch (no body) so this stays fast; call get_message_body for the full text."""
     svc = _service()
     try:
-        listing = svc.users().messages().list(userId="me", labelIds=["INBOX"], maxResults=max_results).execute()
-        out = []
-        for m in listing.get("messages", []):
-            msg = svc.users().messages().get(
-                userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject", "From", "Date"]
-            ).execute()
-            headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-            out.append({
-                "id": m["id"],
-                "threadId": msg.get("threadId", ""),
-                "subject": headers.get("Subject", ""),
-                "from": headers.get("From", ""),
-                "date": headers.get("Date", ""),
-                "snippet": msg.get("snippet", ""),
-            })
+        with _gmail_lock:
+            listing = svc.users().messages().list(userId="me", labelIds=["INBOX"], maxResults=max_results).execute()
+            out = []
+            for m in listing.get("messages", []):
+                msg = svc.users().messages().get(
+                    userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject", "From", "Date"]
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                out.append({
+                    "id": m["id"],
+                    "threadId": msg.get("threadId", ""),
+                    "subject": headers.get("Subject", ""),
+                    "from": headers.get("From", ""),
+                    "date": headers.get("Date", ""),
+                    "snippet": msg.get("snippet", ""),
+                })
         return out
     except Exception as e:  # noqa: BLE001
         raise GmailUnavailable(f"Inbox read failed: {e}") from e
@@ -93,7 +106,8 @@ def get_message_body(message_id: str) -> str:
     if no text/plain part is found - good enough for a short reply)."""
     svc = _service()
     try:
-        msg = svc.users().messages().get(userId="me", id=message_id, format="full").execute()
+        with _gmail_lock:
+            msg = svc.users().messages().get(userId="me", id=message_id, format="full").execute()
     except Exception as e:  # noqa: BLE001
         raise GmailUnavailable(f"Message read failed: {e}") from e
 
